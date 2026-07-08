@@ -21,7 +21,7 @@ cp scripts/Info.plist "$APP/Contents/Info.plist"
 # Ad-hoc signature (stable identity so Accessibility grant sticks across rebuilds
 # is best-effort with "-"; for a durable grant, sign with a real identity).
 echo "▸ codesigning (ad-hoc)…"
-codesign --force --sign - --identifier com.andykim.prose "$APP"
+codesign --force --sign - --identifier com.moxordo.prose "$APP"
 codesign --verify --verbose "$APP" 2>&1 | sed 's/^/  /' || true
 
 echo "▸ built $APP"

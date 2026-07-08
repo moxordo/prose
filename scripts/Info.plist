@@ -7,7 +7,7 @@
     <key>CFBundleDisplayName</key>
     <string>Prose</string>
     <key>CFBundleIdentifier</key>
-    <string>com.andykim.prose</string>
+    <string>com.moxordo.prose</string>
     <key>CFBundleExecutable</key>
     <string>prose</string>
     <key>CFBundlePackageType</key>
