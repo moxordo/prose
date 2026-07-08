@@ -63,12 +63,12 @@ struct RewritePanelView: View {
 
             HStack(spacing: 8) {
                 Spacer()
-                Button("Dismiss", action: onDismiss)
+                Button(action: onDismiss) { buttonLabel("Dismiss", "⎋") }
                     .keyboardShortcut(.cancelAction)
-                Button("Copy", action: onCopy)
+                Button(action: onCopy) { buttonLabel("Copy", "⌘C") }
                     .keyboardShortcut("c", modifiers: [.command])
                     .disabled(model.phase != .done)
-                Button("Replace", action: onReplace)
+                Button(action: onReplace) { buttonLabel("Replace", "⌘↩") }
                     .keyboardShortcut(.return, modifiers: [.command])
                     .disabled(model.phase != .done)
                     .buttonStyle(.borderedProminent)
@@ -76,6 +76,18 @@ struct RewritePanelView: View {
         }
         .padding(14)
         .frame(width: 420)
+    }
+
+    /// Button title with its keyboard shortcut shown dimmed alongside, the way
+    /// macOS menu items surface shortcuts. Inherits the button's foreground color
+    /// so it reads correctly on both plain and prominent (blue) buttons.
+    private func buttonLabel(_ title: String, _ shortcut: String) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+            Text(shortcut)
+                .font(.system(size: 11, weight: .semibold))
+                .opacity(0.55)
+        }
     }
 
     @ViewBuilder private var phaseIndicator: some View {
