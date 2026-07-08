@@ -118,7 +118,7 @@ public struct OllamaRewriter: Rewriting {
         let body = ChatRequest(
             model: config.model,
             messages: [
-                ChatMessage(role: "system", content: config.systemPrompt),
+                ChatMessage(role: "system", content: config.composedSystemPrompt),
                 ChatMessage(role: "user", content: input),
             ],
             stream: true,

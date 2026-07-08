@@ -72,6 +72,50 @@ final class ConfigurationTests: XCTestCase {
         config.ollamaBaseURL = "https://ollama.com///"
         XCTAssertEqual(config.normalizedBaseURL, "https://ollama.com")
     }
+
+    func testComposedSystemPromptIncludesRulesAndPreferences() {
+        var config = ProseConfig.default
+        config.systemPrompt = "BASE."
+        config.rules = ["Keep the original language.", "  "]  // blank is dropped
+        config.preferences = ["Shorter is better."]
+        let prompt = config.composedSystemPrompt
+        XCTAssertTrue(prompt.hasPrefix("BASE."))
+        XCTAssertTrue(prompt.contains("Follow these RULES strictly:"))
+        XCTAssertTrue(prompt.contains("- Keep the original language."))
+        XCTAssertTrue(prompt.contains("Apply these PREFERENCES"))
+        XCTAssertTrue(prompt.contains("- Shorter is better."))
+        XCTAssertFalse(prompt.contains("-  \n"))  // blank rule not emitted
+    }
+
+    func testComposedSystemPromptOmitsEmptySections() {
+        var config = ProseConfig.default
+        config.systemPrompt = "BASE."
+        config.rules = []
+        config.preferences = []
+        XCTAssertEqual(config.composedSystemPrompt, "BASE.")
+    }
+
+    func testSaveStripsApiKeyAndRoundTrips() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prose-test-\(UUID().uuidString)", isDirectory: true)
+        let url = dir.appendingPathComponent("config.json")
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        var config = ProseConfig.default
+        config.apiKey = "SECRET-should-not-persist"
+        config.rules = ["R1"]
+        config.preferences = ["P1", "P2"]
+        config.model = "gemma3:27b"
+        XCTAssertTrue(ConfigLoader.save(config, to: url))
+
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(raw.contains("SECRET-should-not-persist"), "API key must never be written to disk")
+
+        let reloaded = ConfigLoader.load(path: url, environment: [:])
+        XCTAssertEqual(reloaded.rules, ["R1"])
+        XCTAssertEqual(reloaded.preferences, ["P1", "P2"])
+        XCTAssertEqual(reloaded.model, "gemma3:27b")
+    }
 }
 
 // MARK: - Pipeline (capture → rewrite → present) with test doubles

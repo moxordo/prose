@@ -1,5 +1,6 @@
 #if canImport(AppKit)
 import AppKit
+import SwiftUI
 
 /// C-compatible CGEventTap callback (no Swift context capture). 34 == pressure.
 private func proseTapCallback(
@@ -26,12 +27,15 @@ private func proseTapCallback(
 /// triggers, and the pipeline. No Dock icon, no main window.
 @MainActor
 public final class MenuBarApp: NSObject, NSApplicationDelegate {
-    private let config: ProseConfig
+    private var config: ProseConfig
     private var statusItem: NSStatusItem?
     private var pipeline: RewritePipeline?
+    private var presenter: PanelPresenter?
+    private var capture: SelectionCapturing?
     private var triggers: [TriggerSource] = []
     private var forceClick: ForceClickTrigger?
     private var trustTimer: Timer?
+    private var settingsWindow: NSWindow?
     private var recordMonitors: [Any] = []
     private var recordTap: CFMachPort?
 
@@ -55,11 +59,9 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
         Log.startSession("Prose launch — accessibility=\(Permissions.isAccessibilityTrusted) policy=\(NSApp.activationPolicy().rawValue)")
         setupStatusItem()
 
-        let presenter = PanelPresenter()
-        let capture = CompositeCapture([AXSelectionCapture(), ClipboardCopyCapture()])
-        let rewriter = OllamaRewriter(config: config)
-        let pipeline = RewritePipeline(capture: capture, rewriter: rewriter, presenter: presenter)
-        self.pipeline = pipeline
+        self.presenter = PanelPresenter()
+        self.capture = CompositeCapture([AXSelectionCapture(), ClipboardCopyCapture()])
+        buildPipeline()
 
         if config.forceClickEnabled {
             let fc = ForceClickTrigger()
@@ -68,9 +70,9 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
             triggers.append(fc)
         }
         let hotkey = HotkeyTrigger(config: config.hotkey)
-        hotkey.start { [weak pipeline] in
-            Log.write("trigger: hotkey (\(self.config.hotkey.label)) fired")
-            pipeline?.run()
+        hotkey.start { [weak self] in
+            Log.write("trigger: hotkey (\(self?.config.hotkey.label ?? "")) fired")
+            self?.pipeline?.run()
         }
         Log.write("hotkey trigger registered: \(config.hotkey.label)")
         triggers.append(hotkey)
@@ -93,14 +95,50 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
 
     /// (Re)install the force-click detectors bound to the current pipeline. Called
     /// at launch and again once Accessibility is granted (so the tap gets trust).
+    private func buildPipeline() {
+        guard let presenter, let capture else { return }
+        pipeline = RewritePipeline(capture: capture, rewriter: OllamaRewriter(config: config), presenter: presenter)
+    }
+
     private func armForceClick() {
-        guard let fc = forceClick, let pipeline else { return }
+        guard let fc = forceClick else { return }
         fc.stop()
-        fc.start { [weak pipeline] in
+        fc.start { [weak self] in
             Log.write("trigger: force-click fired")
-            pipeline?.run()
+            self?.pipeline?.run()
         }
         Log.write("force-click armed: nsEvent=\(fc.globalMonitorInstalled) cgTap=\(fc.tapInstalled) trusted=\(Permissions.isAccessibilityTrusted)")
+    }
+
+    // MARK: Settings
+
+    @objc private func openSettings() {
+        if let window = settingsWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        let view = SettingsView(
+            config: config,
+            onSave: { [weak self] updated in self?.applySettings(updated) },
+            onClose: { [weak self] in self?.settingsWindow?.close() }
+        )
+        let window = NSWindow(contentViewController: NSHostingController(rootView: view))
+        window.title = "Prose Preferences"
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        window.center()
+        settingsWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func applySettings(_ updated: ProseConfig) {
+        ConfigLoader.save(updated)
+        // Reload so the Keychain-resolved API key is re-attached, then rebuild.
+        config = ConfigLoader.load()
+        buildPipeline()
+        Log.write("settings saved: rules=\(config.rules.count) prefs=\(config.preferences.count) model=\(config.model)")
     }
 
     private func startTrustPolling() {
@@ -135,6 +173,7 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(action("Rewrite Selection  (\(config.hotkey.label))", #selector(triggerNow)))
+        menu.addItem(action("Preferences…", #selector(openSettings), key: ","))
         menu.addItem(.separator())
 
         let backend = (config.apiKey?.isEmpty == false) ? "cloud" : "local"

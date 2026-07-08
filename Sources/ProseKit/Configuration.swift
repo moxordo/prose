@@ -20,6 +20,10 @@ public struct ProseConfig: Codable, Sendable, Equatable {
     public var hotkey: HotkeyConfig
     /// When true the force-click (pressure stage 2) global trigger is armed.
     public var forceClickEnabled: Bool
+    /// Hard constraints the model MUST follow (injected into the system prompt).
+    public var rules: [String]
+    /// Soft stylistic preferences applied when they improve the text.
+    public var preferences: [String]
 
     public init(
         ollamaBaseURL: String = "http://localhost:11434",
@@ -29,7 +33,9 @@ public struct ProseConfig: Codable, Sendable, Equatable {
         systemPrompt: String = ProseConfig.defaultSystemPrompt,
         requestTimeout: Double = 60,
         hotkey: HotkeyConfig = .default,
-        forceClickEnabled: Bool = true
+        forceClickEnabled: Bool = true,
+        rules: [String] = ProseConfig.defaultRules,
+        preferences: [String] = ProseConfig.defaultPreferences
     ) {
         self.ollamaBaseURL = ollamaBaseURL
         self.model = model
@@ -39,12 +45,24 @@ public struct ProseConfig: Codable, Sendable, Equatable {
         self.requestTimeout = requestTimeout
         self.hotkey = hotkey
         self.forceClickEnabled = forceClickEnabled
+        self.rules = rules
+        self.preferences = preferences
     }
 
     public static let `default` = ProseConfig()
 
+    /// Sensible starting rules/preferences (editable in Settings).
+    public static let defaultRules = [
+        "Keep the original language. If the text mixes languages, infer and adapt to the user's own style.",
+    ]
+    public static let defaultPreferences = [
+        "Shorter is normally better.",
+        "If a shorter expression or explanation is closer to the lingua franca of the domain, suggest it.",
+        "Infer the context the text will appear in and fit that register.",
+    ]
+
     private enum CodingKeys: String, CodingKey {
-        case ollamaBaseURL, model, apiKey, temperature, systemPrompt, requestTimeout, hotkey, forceClickEnabled
+        case ollamaBaseURL, model, apiKey, temperature, systemPrompt, requestTimeout, hotkey, forceClickEnabled, rules, preferences
     }
 
     /// Lenient decoding: every field is optional in JSON and falls back to the
@@ -61,6 +79,8 @@ public struct ProseConfig: Codable, Sendable, Equatable {
         self.requestTimeout = try c.decodeIfPresent(Double.self, forKey: .requestTimeout) ?? d.requestTimeout
         self.hotkey = try c.decodeIfPresent(HotkeyConfig.self, forKey: .hotkey) ?? d.hotkey
         self.forceClickEnabled = try c.decodeIfPresent(Bool.self, forKey: .forceClickEnabled) ?? d.forceClickEnabled
+        self.rules = try c.decodeIfPresent([String].self, forKey: .rules) ?? d.rules
+        self.preferences = try c.decodeIfPresent([String].self, forKey: .preferences) ?? d.preferences
     }
 
     /// The editing instruction. Deliberately strict about returning ONLY the
@@ -79,6 +99,21 @@ public struct ProseConfig: Codable, Sendable, Equatable {
         var s = ollamaBaseURL
         while s.hasSuffix("/") { s.removeLast() }
         return s
+    }
+
+    /// The full system prompt sent to the model: the base editing instruction
+    /// plus the user's Rules (hard) and Preferences (soft).
+    public var composedSystemPrompt: String {
+        var parts = [systemPrompt]
+        let cleanRules = rules.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let cleanPrefs = preferences.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if !cleanRules.isEmpty {
+            parts.append("Follow these RULES strictly:\n" + cleanRules.map { "- \($0)" }.joined(separator: "\n"))
+        }
+        if !cleanPrefs.isEmpty {
+            parts.append("Apply these PREFERENCES when they improve the text:\n" + cleanPrefs.map { "- \($0)" }.joined(separator: "\n"))
+        }
+        return parts.joined(separator: "\n\n")
     }
 }
 
@@ -131,6 +166,26 @@ public enum ConfigLoader {
             config.apiKey = Keychain.read()
         }
         return config
+    }
+
+    /// Persist config to disk. The API key is deliberately stripped — it lives in
+    /// the Keychain, never in plaintext config.json.
+    @discardableResult
+    public static func save(_ config: ProseConfig, to path: URL? = nil) -> Bool {
+        var toWrite = config
+        toWrite.apiKey = nil
+        let url = path ?? defaultPath
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(toWrite).write(to: url)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Exposed for testing.
