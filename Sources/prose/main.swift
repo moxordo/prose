@@ -131,6 +131,82 @@ func runSnapshot() -> Int32 {
 }
 #endif
 
+#if canImport(AppKit)
+/// C-compatible CGEventTap callback (can't capture Swift context). Prints any
+/// pressure/mouse event the tap sees — 34 == NSEventType.pressure.
+private func diagnoseTapCallback(
+    proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refcon: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    let out: (String) -> Void = { FileHandle.standardOutput.write(Data(($0 + "\n").utf8)) }
+    if type.rawValue == 34, let ns = NSEvent(cgEvent: event) {
+        out("  [CGtap pressure] stage=\(ns.stage) pressure=\(String(format: "%.2f", ns.pressure))")
+    } else if type == .leftMouseDown {
+        out("  [CGtap leftMouseDown]")
+    }
+    return Unmanaged.passUnretained(event)
+}
+
+@MainActor
+func runDiagnose() -> Never {
+    func dout(_ s: String) { FileHandle.standardOutput.write(Data((s + "\n").utf8)) }
+
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+
+    let config = resolveConfig()
+    dout("── prose diagnose ──")
+    dout("accessibility trusted : \(Permissions.isAccessibilityTrusted)")
+    dout("endpoint / model      : \(config.normalizedBaseURL)  \(config.model)  key=\((config.apiKey?.isEmpty == false) ? "set" : "none")")
+    dout("SF symbol resolves    : \(NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: nil) != nil)")
+
+    // 1) Force-click via NSEvent global .pressure monitor
+    let fc = ForceClickTrigger()
+    fc.start { dout("✅ ForceClickTrigger FIRED (NSEvent stage-2 detected)") }
+    dout("NSEvent .pressure monitor installed : \(fc.globalMonitorInstalled)")
+
+    // 2) Raw NSEvent global monitors (see what actually arrives)
+    let rawPressure = NSEvent.addGlobalMonitorForEvents(matching: [.pressure]) { ev in
+        dout("  [NSEvent pressure] stage=\(ev.stage) pressure=\(String(format: "%.2f", ev.pressure))")
+    }
+    let rawMouse = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { ev in
+        dout("  [NSEvent leftMouseDown] stage=\(ev.stage)")
+    }
+    dout("raw NSEvent monitors  : pressure=\(rawPressure != nil ? "ok" : "NIL") mouse=\(rawMouse != nil ? "ok" : "NIL")")
+
+    // 3) CGEventTap for pressure (bit 34) + mouse — the more reliable low-level path
+    let mask: CGEventMask = (1 << 34) | (1 << CGEventType.leftMouseDown.rawValue)
+    let tap = CGEvent.tapCreate(
+        tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
+        eventsOfInterest: mask, callback: diagnoseTapCallback, userInfo: nil
+    )
+    if let tap {
+        let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        dout("CGEventTap (pressure) : installed")
+    } else {
+        dout("CGEventTap (pressure) : FAILED (needs Accessibility)")
+    }
+
+    // 4) Capture test on whatever is currently selected
+    Task { @MainActor in
+        let cap = CompositeCapture([AXSelectionCapture(), ClipboardCopyCapture()])
+        let text = await cap.capturedSelection()
+        dout("capture test          : \(text.map { "\"\($0.prefix(60))\"" } ?? "nil (nothing selected or no Accessibility)")")
+    }
+
+    let seconds = Double(flag("--seconds") ?? "20") ?? 20
+    dout("\n→ Switch to another app, SELECT some text, then FORCE-CLICK it.")
+    dout("  Watching for \(Int(seconds))s — lines above will show what each mechanism receives.\n")
+    DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+        dout("── diagnose done ──")
+        exit(0)
+    }
+    app.run()
+    fatalError("unreachable")
+}
+#endif
+
 // MARK: - Dispatch
 
 switch command {
@@ -142,6 +218,13 @@ case "version", "--version":
 
 case "config":
     runConfig()
+
+case "diagnose":
+    #if canImport(AppKit)
+    runDiagnose()
+    #else
+    print("unsupported platform"); exit(2)
+    #endif
 
 case "selftest":
     let code = await runSelftest()

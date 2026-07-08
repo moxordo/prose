@@ -28,22 +28,48 @@ public final class ProgrammaticTrigger: TriggerSource {
 
 #if canImport(AppKit)
 
-/// Detects a Force Touch "force click" — a deep press that crosses into
-/// pressure **stage 2** — anywhere on the system via a global event monitor.
+/// C-compatible tap callback for the force-click CGEventTap. Recovers the
+/// trigger via `refcon` and forwards the pressure stage.
+private func forceClickTapCallback(
+    proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refcon: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    guard let refcon else { return Unmanaged.passUnretained(event) }
+    let trigger = Unmanaged<ForceClickTrigger>.fromOpaque(refcon).takeUnretainedValue()
+    // The system disables taps that time out or on fast user input — re-arm.
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        trigger.reenableTap()
+        return Unmanaged.passUnretained(event)
+    }
+    if type.rawValue == 34, let ns = NSEvent(cgEvent: event) {
+        let stage = ns.stage
+        Task { @MainActor in trigger.handleStage(stage, source: "cgtap") }
+    }
+    return Unmanaged.passUnretained(event)
+}
+
+/// Detects a Force Touch "force click" — a deep press crossing into pressure
+/// **stage 2** — anywhere on the system. Ships TWO detectors because global
+/// force-click delivery is genuinely unreliable:
 ///
-/// Caveats baked into the design:
-///  • Global monitors are passive observers; they cannot consume the event, so
-///    the OS "Look Up" behavior may also fire. That's acceptable for a utility.
-///  • Pressure delivery to global monitors isn't guaranteed in every non-Cocoa
-///    surface, which is why `HotkeyTrigger` exists as a permission-light backup.
-///  • We debounce on the 1→2 stage transition so one deep press == one trigger.
+///  1. `NSEvent` global `.pressure` monitor — simple, but frequently never fires
+///     in non-Cocoa apps.
+///  2. `CGEventTap` on the pressure event (type 34) — lower level, needs
+///     Accessibility, and is the path that usually *does* deliver globally.
+///
+/// Whichever fires first wins; a shared debounce collapses duplicates so one deep
+/// press == one trigger. `HotkeyTrigger` (⌥⌘R) remains the guaranteed fallback.
 public final class ForceClickTrigger: TriggerSource {
     private var globalMonitor: Any?
     private var localMonitor: Any?
+    private var tap: CFMachPort?
+    private var tapSource: CFRunLoopSource?
     private var handler: (@MainActor () -> Void)?
     private var lastStage: Int = 0
     private var lastFire: Date = .distantPast
     private let debounce: TimeInterval
+
+    public private(set) var globalMonitorInstalled = false
+    public private(set) var tapInstalled = false
 
     public init(debounce: TimeInterval = 0.6) {
         self.debounce = debounce
@@ -51,33 +77,62 @@ public final class ForceClickTrigger: TriggerSource {
 
     public func start(_ handler: @escaping @MainActor () -> Void) {
         self.handler = handler
+
         let mask: NSEvent.EventTypeMask = [.pressure]
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
-            self?.handlePressure(event)
+            self?.handleStage(event.stage, source: "nsevent")
         }
-        // A local monitor lets force-click work while our own panel is key too.
+        globalMonitorInstalled = (globalMonitor != nil)
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
-            self?.handlePressure(event)
+            self?.handleStage(event.stage, source: "nsevent-local")
             return event
         }
+
+        installTap()
+    }
+
+    private func installTap() {
+        let mask: CGEventMask = (1 << 34) // NSEventType.pressure
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
+            eventsOfInterest: mask, callback: forceClickTapCallback, userInfo: refcon
+        ) else {
+            tapInstalled = false
+            return
+        }
+        self.tap = tap
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        tapSource = source
+        tapInstalled = true
+    }
+
+    fileprivate func reenableTap() {
+        if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
     }
 
     public func stop() {
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
         if let m = localMonitor { NSEvent.removeMonitor(m) }
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let tapSource { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), tapSource, .commonModes) }
         globalMonitor = nil
         localMonitor = nil
+        tap = nil
+        tapSource = nil
         handler = nil
     }
 
-    private func handlePressure(_ event: NSEvent) {
-        let stage = event.stage
+    /// Fire only on the upward transition into stage 2, debounced across sources.
+    fileprivate func handleStage(_ stage: Int, source: String) {
         defer { lastStage = stage }
-        // Fire only on the upward transition into stage 2 (the force-click detent).
         guard stage >= 2, lastStage < 2 else { return }
         let now = Date()
         guard now.timeIntervalSince(lastFire) > debounce else { return }
         lastFire = now
+        Log.write("force-click detected via \(source) (stage \(stage))")
         let h = handler
         Task { @MainActor in h?() }
     }

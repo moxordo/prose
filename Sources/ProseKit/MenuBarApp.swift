@@ -1,6 +1,18 @@
 #if canImport(AppKit)
 import AppKit
 
+/// C-compatible CGEventTap callback (no Swift context capture). 34 == pressure.
+private func proseTapCallback(
+    proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refcon: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    if type.rawValue == 34, let ns = NSEvent(cgEvent: event) {
+        Log.write("  [CGtap pressure] stage=\(ns.stage) pressure=\(String(format: "%.2f", ns.pressure))")
+    } else if type == .leftMouseDown {
+        Log.write("  [CGtap leftMouseDown]")
+    }
+    return Unmanaged.passUnretained(event)
+}
+
 /// The menu-bar (LSUIElement/accessory) application. Owns the status item, the
 /// triggers, and the pipeline. No Dock icon, no main window.
 @MainActor
@@ -9,6 +21,8 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var pipeline: RewritePipeline?
     private var triggers: [TriggerSource] = []
+    private var recordMonitors: [Any] = []
+    private var recordTap: CFMachPort?
 
     public init(config: ProseConfig) {
         self.config = config
@@ -21,13 +35,13 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
         app.setActivationPolicy(.accessory)
         let delegate = MenuBarApp(config: config)
         app.delegate = delegate
-        // Keep a strong ref alive for the app lifetime.
         objc_setAssociatedObject(app, "prose.delegate", delegate, .OBJC_ASSOCIATION_RETAIN)
         app.run()
         fatalError("NSApplication.run returned")
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        Log.startSession("Prose launch — accessibility=\(Permissions.isAccessibilityTrusted) policy=\(NSApp.activationPolicy().rawValue)")
         setupStatusItem()
 
         let presenter = PanelPresenter()
@@ -38,60 +52,111 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
 
         if config.forceClickEnabled {
             let forceClick = ForceClickTrigger()
-            forceClick.start { [weak pipeline] in pipeline?.run() }
+            forceClick.start { [weak pipeline] in
+                Log.write("trigger: force-click fired")
+                pipeline?.run()
+            }
+            Log.write("force-click trigger: nsEventMonitor=\(forceClick.globalMonitorInstalled) cgEventTap=\(forceClick.tapInstalled)")
             triggers.append(forceClick)
         }
         let hotkey = HotkeyTrigger(config: config.hotkey)
-        hotkey.start { [weak pipeline] in pipeline?.run() }
+        hotkey.start { [weak pipeline] in
+            Log.write("trigger: hotkey (\(self.config.hotkey.label)) fired")
+            pipeline?.run()
+        }
+        Log.write("hotkey trigger registered: \(config.hotkey.label)")
         triggers.append(hotkey)
 
-        // Suppress the system Accessibility prompt during automated smoke tests.
-        let suppressPrompt = ProcessInfo.processInfo.environment["PROSE_SUPPRESS_AX_PROMPT"] == "1"
-        if !Permissions.isAccessibilityTrusted && !suppressPrompt {
-            Permissions.ensureAccessibility(prompt: true)
+        let suppressUI = ProcessInfo.processInfo.environment["PROSE_SUPPRESS_AX_PROMPT"] == "1"
+        if !suppressUI {
+            showWelcomeIfNeeded()
+            if !Permissions.isAccessibilityTrusted {
+                Permissions.ensureAccessibility(prompt: true)
+            }
         }
 
-        // Smoke-test hook: exit cleanly after a moment so a headless launch can
-        // confirm the app boots without hanging the run loop forever.
         if let seconds = ProcessInfo.processInfo.environment["PROSE_SMOKE_EXIT_SECONDS"].flatMap(Double.init) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
-                NSApp.terminate(nil)
-            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { NSApp.terminate(nil) }
         }
     }
 
+    // MARK: Status item
+
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: "Prose")
+        if let button = item.button {
+            if let image = NSImage(systemSymbolName: "wand.and.stars", accessibilityDescription: "Prose") {
+                image.isTemplate = true
+                button.image = image
+            } else {
+                button.title = "✨"
+            }
+            button.toolTip = "Prose — rewrite selection (\(config.hotkey.label))"
+        }
+        item.isVisible = true
+        Log.write("statusItem: button=\(item.button != nil) hasImage=\(item.button?.image != nil) frame=\(item.button?.frame ?? .zero)")
 
         let menu = NSMenu()
-        let rewriteItem = NSMenuItem(
-            title: "Rewrite Selection (\(config.hotkey.label))",
-            action: #selector(triggerNow), keyEquivalent: ""
-        )
-        rewriteItem.target = self
-        menu.addItem(rewriteItem)
+        menu.addItem(action("Rewrite Selection  (\(config.hotkey.label))", #selector(triggerNow)))
         menu.addItem(.separator())
 
         let backend = (config.apiKey?.isEmpty == false) ? "cloud" : "local"
         menu.addItem(disabled: "Model: \(config.model)  [\(backend)]")
-        menu.addItem(disabled: "Endpoint: \(config.normalizedBaseURL)")
-
-        let axItem = NSMenuItem(
-            title: Permissions.isAccessibilityTrusted ? "Accessibility: granted ✓" : "Grant Accessibility…",
-            action: #selector(openAccessibility), keyEquivalent: ""
-        )
-        axItem.target = self
-        menu.addItem(axItem)
-
+        menu.addItem(action(
+            Permissions.isAccessibilityTrusted ? "Accessibility: granted ✓" : "⚠️ Grant Accessibility…",
+            #selector(openAccessibility)
+        ))
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit Prose", action: #selector(quit), keyEquivalent: "q")
-        quit.target = self
-        menu.addItem(quit)
+        menu.addItem(action("Record force-click test (20s)", #selector(recordForceClickTest)))
+        menu.addItem(action("Open Log", #selector(openLog)))
+        menu.addItem(.separator())
+        menu.addItem(action("Quit Prose", #selector(quit), key: "q"))
 
         item.menu = menu
         statusItem = item
     }
+
+    private func action(_ title: String, _ selector: Selector, key: String = "") -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: selector, keyEquivalent: key)
+        item.target = self
+        return item
+    }
+
+    // MARK: Welcome
+
+    private func showWelcomeIfNeeded() {
+        let trusted = Permissions.isAccessibilityTrusted
+        let welcomed = UserDefaults.standard.bool(forKey: "prose.welcomed")
+        // Nag until setup is complete; once trusted and welcomed, stay quiet.
+        guard !trusted || !welcomed else { return }
+        UserDefaults.standard.set(true, forKey: "prose.welcomed")
+
+        let alert = NSAlert()
+        alert.messageText = "Prose is running ✨"
+        let axLine = trusted
+            ? "Accessibility: granted ✓"
+            : "⚠️ Accessibility is NOT granted yet — it's required to read your selection and to trigger on force-click. Grant it, then relaunch."
+        alert.informativeText = """
+            Select text in any app, then force-click it — or press \(config.hotkey.label) — to get a clearer rewrite.
+
+            The ✨ icon lives in your menu bar (it may be hidden behind the notch if your menu bar is full). Use it to trigger a rewrite or quit.
+
+            \(axLine)
+
+            Diagnostics log: ~/Library/Logs/Prose.log
+            """
+        NSApp.activate(ignoringOtherApps: true)
+        if !trusted {
+            alert.addButton(withTitle: "Open Accessibility Settings")
+            alert.addButton(withTitle: "Later")
+            if alert.runModal() == .alertFirstButtonReturn { openAccessibility() }
+        } else {
+            alert.addButton(withTitle: "Got it")
+            alert.runModal()
+        }
+    }
+
+    // MARK: Actions
 
     @objc private func triggerNow() { pipeline?.run() }
 
@@ -99,6 +164,52 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
         Permissions.ensureAccessibility(prompt: true)
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func openLog() {
+        NSWorkspace.shared.open(Log.fileURL)
+    }
+
+    /// Install raw monitors + a CGEventTap and log every pressure/mouse event for
+    /// 20s. Because this runs inside the AX-trusted app, it reveals the truth about
+    /// whether force-click is delivered globally — which an untrusted CLI cannot.
+    @objc private func recordForceClickTest() {
+        Log.write("── RECORD force-click test (20s) — accessibility=\(Permissions.isAccessibilityTrusted) ──")
+        let originalImage = statusItem?.button?.image
+        statusItem?.button?.image = nil
+        statusItem?.button?.title = "◉ REC"
+
+        let p = NSEvent.addGlobalMonitorForEvents(matching: [.pressure]) { e in
+            Log.write("  [NSEvent pressure] stage=\(e.stage) pressure=\(String(format: "%.2f", e.pressure))")
+        }
+        let m = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { e in
+            Log.write("  [NSEvent leftMouseDown] stage=\(e.stage)")
+        }
+        recordMonitors = [p, m].compactMap { $0 }
+
+        let mask: CGEventMask = (1 << 34) | (1 << CGEventType.leftMouseDown.rawValue)
+        if let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
+                                       options: .listenOnly, eventsOfInterest: mask,
+                                       callback: proseTapCallback, userInfo: nil) {
+            let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
+            CGEvent.tapEnable(tap: tap, enable: true)
+            recordTap = tap
+            Log.write("  CGEventTap installed")
+        } else {
+            Log.write("  CGEventTap FAILED (needs Accessibility)")
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+            guard let self else { return }
+            self.recordMonitors.forEach { NSEvent.removeMonitor($0) }
+            self.recordMonitors = []
+            if let t = self.recordTap { CGEvent.tapEnable(tap: t, enable: false) }
+            self.recordTap = nil
+            self.statusItem?.button?.title = ""
+            self.statusItem?.button?.image = originalImage
+            Log.write("── RECORD done ── (force-click a few times above? check the lines)")
         }
     }
 

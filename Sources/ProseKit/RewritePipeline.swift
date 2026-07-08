@@ -27,16 +27,19 @@ public final class RewritePipeline {
     /// Awaitable entry point — used by triggers (indirectly) and by tests.
     /// Re-entrancy guarded: a second trigger while one is in flight is ignored.
     public func runAndWait() async {
-        guard !isRunning else { return }
+        guard !isRunning else { Log.write("pipeline: ignored (already running)"); return }
         isRunning = true
         defer { isRunning = false }
 
+        Log.write("pipeline: triggered — capturing selection…")
         guard let selection = await capture.capturedSelection(),
               !selection.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            Log.write("pipeline: no selection captured → noSelection()")
             presenter.noSelection()
             return
         }
 
+        Log.write("pipeline: captured \(selection.count) chars; rewriting…")
         presenter.begin(original: selection)
 
         let rewriter = self.rewriter
@@ -65,8 +68,10 @@ public final class RewritePipeline {
 
         switch await work.value {
         case .success(let full):
+            Log.write("pipeline: rewrite ok (\(full.count) chars)")
             presenter.finish(full: full)
         case .failure(let error):
+            Log.write("pipeline: rewrite FAILED — \(error.localizedDescription)")
             presenter.fail(error)
         }
     }
