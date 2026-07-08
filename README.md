@@ -49,12 +49,25 @@ Everything lives under the menu-bar **✨** icon (which may hide behind the notc
 
 Plus the **model** and **creativity** (temperature). Saving writes `~/.config/prose/config.json` (your API key stays in the Keychain, never on disk) and applies to the next rewrite immediately.
 
-## Backend
+## Backends (pluggable)
 
-Key resolution: `PROSE_OLLAMA_KEY` / `OLLAMA_API_KEY` env → Keychain (`prose-ollama-api-key`) → config. The key never lives in config.json.
+Pick a provider in **Preferences… (⌘,)** or via `config.json`'s `provider` field:
 
-- **Cloud:** `ollamaBaseURL: https://ollama.com`, a cloud model (e.g. `gemma3:27b`, `gpt-oss:120b`), key in Keychain.
-- **Local:** install Ollama, `ollama pull llama3.2:3b`, set `ollamaBaseURL: http://localhost:11434`, `model: llama3.2:3b`, no key.
+| Provider (`provider`) | Auth | Default model | Notes |
+|---|---|---|---|
+| **Claude — subscription** (`claude-subscription`) | The signed-in `claude` CLI (your Claude.ai OAuth) | `sonnet` | No API key, no per-token billing; shells out to Claude Code |
+| **Claude — API key** (`anthropic`) | `ANTHROPIC_API_KEY` | `claude-opus-4-8` | Anthropic Messages API; no `temperature`, no thinking (fast) |
+| **Ollama** (`ollama`) | optional key | `gemma3:27b` (cloud) / `llama3.2:3b` (local) | `ollamaBaseURL: https://ollama.com` + key, or `http://localhost:11434` |
+| **OpenAI / ChatGPT** (`openai`) | `OPENAI_API_KEY` | `gpt-4o` | Chat Completions API |
+
+**Key resolution** (per active provider): `PROSE_<PROVIDER>_KEY` / `<PROVIDER>_API_KEY` env → Keychain (`prose-<provider>-api-key`) → nothing. Keys live in the **Keychain**, never in config.json. Settings writes a pasted key into the right Keychain service automatically.
+
+```jsonc
+// ~/.config/prose/config.json — switch backend by changing "provider" + "model"
+{ "provider": "claude-subscription", "model": "sonnet", "forceClickEnabled": true }
+```
+
+CLI: `prose selftest --provider anthropic --model claude-haiku-4-5 --text "…"`
 
 ## How it works
 
@@ -64,7 +77,7 @@ Four stages, each behind a protocol with a real implementation and a test double
 |---|---|---|
 | **Trigger** | `HotkeyTrigger` (⌥⌘R, Carbon) + `ForceClickTrigger` | Hotkey needs no Accessibility. Force-click uses an `NSEvent` monitor + `CGEventTap`; auto-re-arms when Accessibility is granted |
 | **Capture** | `AXSelectionCapture` → `ClipboardCopyCapture` | AX first; synthetic-⌘C fallback with pasteboard save/restore covers Terminal/Electron |
-| **Rewrite** | `OllamaRewriter` (streaming `/api/chat`) | Backend-agnostic; thinking-aware for reasoning models; Rules + Preferences composed into the prompt |
+| **Rewrite** | `makeRewriter(config)` → Ollama / Anthropic / OpenAI / Claude-CLI | Pluggable provider behind one `Rewriting` protocol; Rules + Preferences composed into the prompt |
 | **Present** | `PanelPresenter` (key `NSPanel` + SwiftUI) | Streams the rewrite; Copy / Replace-in-place; returns focus to the source app |
 
 ## CLI

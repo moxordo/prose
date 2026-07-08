@@ -1,5 +1,54 @@
 import Foundation
 
+/// Which LLM backend produces the rewrite. Each provider resolves its API key
+/// from its own Keychain service + env vars, and has its own default model.
+public enum LLMProvider: String, Codable, Sendable, CaseIterable {
+    case claudeSubscription = "claude-subscription"  // via the logged-in `claude` CLI (agent SDK / OAuth)
+    case anthropicAPI = "anthropic"                  // via ANTHROPIC_API_KEY
+    case ollama                                      // local or ollama.com (key)
+    case openai                                      // ChatGPT / OpenAI
+
+    public var displayName: String {
+        switch self {
+        case .claudeSubscription: return "Claude (subscription · CLI)"
+        case .anthropicAPI: return "Claude (API key)"
+        case .ollama: return "Ollama (local / cloud)"
+        case .openai: return "OpenAI / ChatGPT"
+        }
+    }
+
+    public var defaultModel: String {
+        switch self {
+        case .claudeSubscription: return "sonnet"       // `claude --model` alias; "" also works
+        case .anthropicAPI: return "claude-opus-4-8"
+        case .ollama: return "gemma3:27b"
+        case .openai: return "gpt-4o"
+        }
+    }
+
+    /// Keychain service holding this provider's key, or nil if it needs no key.
+    public var keychainService: String? {
+        switch self {
+        case .claudeSubscription: return nil
+        case .anthropicAPI: return "prose-anthropic-api-key"
+        case .ollama: return "prose-ollama-api-key"
+        case .openai: return "prose-openai-api-key"
+        }
+    }
+
+    /// Env vars consulted (in order) for this provider's key.
+    public var envVarNames: [String] {
+        switch self {
+        case .claudeSubscription: return []
+        case .anthropicAPI: return ["PROSE_ANTHROPIC_KEY", "ANTHROPIC_API_KEY"]
+        case .ollama: return ["PROSE_OLLAMA_KEY", "OLLAMA_API_KEY"]
+        case .openai: return ["PROSE_OPENAI_KEY", "OPENAI_API_KEY"]
+        }
+    }
+
+    public var needsKey: Bool { keychainService != nil }
+}
+
 /// User-facing configuration for Prose.
 ///
 /// Resolution precedence (lowest → highest):
@@ -10,6 +59,8 @@ import Foundation
 /// `apiKey`) for the hosted Ollama Cloud / Turbo subscription. The wire protocol
 /// (`POST /api/chat`, NDJSON stream) is identical for both.
 public struct ProseConfig: Codable, Sendable, Equatable {
+    /// Which LLM backend to use.
+    public var provider: LLMProvider
     public var ollamaBaseURL: String
     public var model: String
     /// Optional bearer token. Required only for Ollama Cloud (ollama.com).
@@ -26,6 +77,7 @@ public struct ProseConfig: Codable, Sendable, Equatable {
     public var preferences: [String]
 
     public init(
+        provider: LLMProvider = .ollama,
         ollamaBaseURL: String = "http://localhost:11434",
         model: String = "llama3.2:3b",
         apiKey: String? = nil,
@@ -37,6 +89,7 @@ public struct ProseConfig: Codable, Sendable, Equatable {
         rules: [String] = ProseConfig.defaultRules,
         preferences: [String] = ProseConfig.defaultPreferences
     ) {
+        self.provider = provider
         self.ollamaBaseURL = ollamaBaseURL
         self.model = model
         self.apiKey = apiKey
@@ -62,7 +115,7 @@ public struct ProseConfig: Codable, Sendable, Equatable {
     ]
 
     private enum CodingKeys: String, CodingKey {
-        case ollamaBaseURL, model, apiKey, temperature, systemPrompt, requestTimeout, hotkey, forceClickEnabled, rules, preferences
+        case provider, ollamaBaseURL, model, apiKey, temperature, systemPrompt, requestTimeout, hotkey, forceClickEnabled, rules, preferences
     }
 
     /// Lenient decoding: every field is optional in JSON and falls back to the
@@ -71,6 +124,7 @@ public struct ProseConfig: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = ProseConfig.default
+        self.provider = try c.decodeIfPresent(LLMProvider.self, forKey: .provider) ?? d.provider
         self.ollamaBaseURL = try c.decodeIfPresent(String.self, forKey: .ollamaBaseURL) ?? d.ollamaBaseURL
         self.model = try c.decodeIfPresent(String.self, forKey: .model) ?? d.model
         self.apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey)
@@ -159,11 +213,16 @@ public enum ConfigLoader {
             config = fileConfig
         }
         applyEnvironment(environment, to: &config)
-        // API key resolution precedence: env / file value (already applied) > Keychain.
-        // Keychain is the secure home for the Ollama Cloud key; it never lands in
-        // config.json. Only consult it when nothing more specific was provided.
-        if (config.apiKey?.isEmpty ?? true) {
-            config.apiKey = Keychain.read()
+        // Resolve the active provider's API key. Precedence: file value (already
+        // applied) > provider env vars > provider Keychain service. Keys never
+        // land in config.json; the Keychain is their secure home.
+        if config.apiKey?.isEmpty ?? true {
+            for name in config.provider.envVarNames {
+                if let v = environment[name], !v.isEmpty { config.apiKey = v; break }
+            }
+        }
+        if (config.apiKey?.isEmpty ?? true), let service = config.provider.keychainService {
+            config.apiKey = Keychain.read(service: service)
         }
         return config
     }
@@ -188,11 +247,12 @@ public enum ConfigLoader {
         }
     }
 
-    /// Exposed for testing.
+    /// Exposed for testing. Non-secret fields only; the API key is resolved
+    /// per-provider in `load()`.
     public static func applyEnvironment(_ env: [String: String], to config: inout ProseConfig) {
+        if let v = env["PROSE_PROVIDER"], let p = LLMProvider(rawValue: v) { config.provider = p }
         if let v = env["PROSE_OLLAMA_URL"], !v.isEmpty { config.ollamaBaseURL = v }
         if let v = env["PROSE_OLLAMA_MODEL"] ?? env["PROSE_MODEL"], !v.isEmpty { config.model = v }
-        if let v = env["PROSE_OLLAMA_KEY"] ?? env["OLLAMA_API_KEY"], !v.isEmpty { config.apiKey = v }
         if let v = env["PROSE_TEMPERATURE"], let d = Double(v) { config.temperature = d }
         if let v = env["PROSE_TIMEOUT"], let d = Double(v) { config.requestTimeout = d }
         if let v = env["PROSE_SYSTEM_PROMPT"], !v.isEmpty { config.systemPrompt = v }

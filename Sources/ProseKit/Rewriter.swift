@@ -45,6 +45,26 @@ public extension Rewriting {
     }
 }
 
+/// Build the rewriter for the configured provider.
+public func makeRewriter(config: ProseConfig, session: URLSession = .shared) -> Rewriting {
+    switch config.provider {
+    case .ollama: return OllamaRewriter(config: config, session: session)
+    case .anthropicAPI: return AnthropicRewriter(config: config, session: session)
+    case .openai: return OpenAIRewriter(config: config, session: session)
+    case .claudeSubscription: return ClaudeSubscriptionRewriter(config: config)
+    }
+}
+
+/// Shared HTTP error for API-key-based providers.
+public enum ProviderError: LocalizedError {
+    case missingKey(String)
+    public var errorDescription: String? {
+        switch self {
+        case .missingKey(let p): return "No API key set for \(p). Add it in Preferences."
+        }
+    }
+}
+
 // MARK: - Ollama wire types
 
 private struct ChatMessage: Encodable {

@@ -97,7 +97,7 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
     /// at launch and again once Accessibility is granted (so the tap gets trust).
     private func buildPipeline() {
         guard let presenter, let capture else { return }
-        pipeline = RewritePipeline(capture: capture, rewriter: OllamaRewriter(config: config), presenter: presenter)
+        pipeline = RewritePipeline(capture: capture, rewriter: makeRewriter(config: config), presenter: presenter)
     }
 
     private func armForceClick() {
@@ -176,8 +176,8 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
         menu.addItem(action("Preferences…", #selector(openSettings), key: ","))
         menu.addItem(.separator())
 
-        let backend = (config.apiKey?.isEmpty == false) ? "cloud" : "local"
-        menu.addItem(disabled: "Model: \(config.model)  [\(backend)]")
+        menu.addItem(disabled: "\(config.provider.displayName)")
+        menu.addItem(disabled: "Model: \(config.model.isEmpty ? "default" : config.model)")
         menu.addItem(action(
             Permissions.isAccessibilityTrusted ? "Accessibility: granted ✓" : "⚠️ Grant Accessibility…",
             #selector(openAccessibility)

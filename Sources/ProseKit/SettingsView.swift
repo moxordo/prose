@@ -6,6 +6,8 @@ import SwiftUI
 /// in the Keychain) and rebuilds the pipeline so changes apply to the next rewrite.
 @MainActor
 public struct SettingsView: View {
+    @State private var provider: LLMProvider
+    @State private var apiKey: String = ""
     @State private var rulesText: String
     @State private var preferencesText: String
     @State private var model: String
@@ -21,6 +23,7 @@ public struct SettingsView: View {
         onClose: @escaping () -> Void
     ) {
         self.baseConfig = config
+        _provider = State(initialValue: config.provider)
         _rulesText = State(initialValue: config.rules.joined(separator: "\n"))
         _preferencesText = State(initialValue: config.preferences.joined(separator: "\n"))
         _model = State(initialValue: config.model)
@@ -36,6 +39,10 @@ public struct SettingsView: View {
                 Text("Shape how your text gets rewritten. One item per line.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+
+            providerSection
+
+            Divider()
 
             section(
                 "Rules",
@@ -78,6 +85,53 @@ public struct SettingsView: View {
         .frame(width: 540)
     }
 
+    @ViewBuilder private var providerSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Backend").font(.system(size: 13, weight: .semibold))
+            Picker("Provider", selection: $provider) {
+                ForEach(LLMProvider.allCases, id: \.self) { p in
+                    Text(p.displayName).tag(p)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 320)
+            .onChange(of: provider) { _, newValue in
+                model = newValue.defaultModel
+                apiKey = ""
+            }
+
+            if provider.needsKey {
+                HStack(spacing: 8) {
+                    SecureField(keyPlaceholder, text: $apiKey)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 300)
+                    if keyAlreadyStored {
+                        Text("stored ✓").font(.caption).foregroundStyle(.green)
+                    }
+                }
+                Text("Stored in the Keychain, never in config.json. Leave blank to keep the current key.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Uses the signed-in `claude` CLI (your subscription) — no API key needed.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var keyPlaceholder: String {
+        switch provider {
+        case .anthropicAPI: return "Paste your ANTHROPIC_API_KEY"
+        case .openai: return "Paste your OPENAI_API_KEY"
+        case .ollama: return "Ollama Cloud key (blank for local)"
+        case .claudeSubscription: return ""
+        }
+    }
+
+    private var keyAlreadyStored: Bool {
+        guard let service = provider.keychainService else { return false }
+        return Keychain.read(service: service) != nil
+    }
+
     private func section(_ title: String, subtitle: String, text: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.system(size: 13, weight: .semibold))
@@ -103,12 +157,17 @@ public struct SettingsView: View {
 
     private func save() {
         var updated = baseConfig
+        updated.provider = provider
         updated.rules = lines(rulesText)
         updated.preferences = lines(preferencesText)
-        updated.model = model.trimmingCharacters(in: .whitespaces).isEmpty
-            ? baseConfig.model
-            : model.trimmingCharacters(in: .whitespaces)
+        updated.model = model.trimmingCharacters(in: .whitespaces)
         updated.temperature = temperature
+
+        // Persist a freshly-entered key into the provider's Keychain service.
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !key.isEmpty, let service = provider.keychainService {
+            Keychain.write(key, service: service)
+        }
         onSave(updated)
         onClose()
     }

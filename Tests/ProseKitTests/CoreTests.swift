@@ -39,21 +39,85 @@ final class OllamaStreamParserTests: XCTestCase {
     }
 }
 
+// MARK: - Anthropic + OpenAI SSE parsers
+
+final class AnthropicStreamParserTests: XCTestCase {
+    func testTextDelta() {
+        let line = #"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#
+        XCTAssertEqual(AnthropicStreamParser.parse(dataJSON: line), .text("Hello"))
+    }
+    func testThinkingDelta() {
+        let line = #"{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hmm"}}"#
+        XCTAssertEqual(AnthropicStreamParser.parse(dataJSON: line), .thinking("hmm"))
+    }
+    func testMessageStop() {
+        XCTAssertEqual(AnthropicStreamParser.parse(dataJSON: #"{"type":"message_stop"}"#), .done)
+    }
+    func testRefusal() {
+        let line = #"{"type":"message_delta","delta":{"stop_reason":"refusal"}}"#
+        XCTAssertEqual(AnthropicStreamParser.parse(dataJSON: line), .refusal)
+    }
+    func testError() {
+        let line = #"{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}"#
+        XCTAssertEqual(AnthropicStreamParser.parse(dataJSON: line), .apiError("overloaded"))
+    }
+    func testPingAndDoneIgnored() {
+        XCTAssertNil(AnthropicStreamParser.parse(dataJSON: #"{"type":"ping"}"#))
+        XCTAssertNil(AnthropicStreamParser.parse(dataJSON: "[DONE]"))
+        XCTAssertNil(AnthropicStreamParser.parse(dataJSON: ""))
+    }
+}
+
+final class OpenAIStreamParserTests: XCTestCase {
+    func testContentDelta() {
+        let line = #"{"choices":[{"delta":{"content":"Hello"}}]}"#
+        XCTAssertEqual(OpenAIStreamParser.parse(dataJSON: line), .text("Hello"))
+    }
+    func testDoneSentinel() {
+        XCTAssertEqual(OpenAIStreamParser.parse(dataJSON: "[DONE]"), .done)
+    }
+    func testRoleOnlyDeltaIgnored() {
+        let line = #"{"choices":[{"delta":{"role":"assistant"}}]}"#
+        XCTAssertNil(OpenAIStreamParser.parse(dataJSON: line))
+    }
+    func testError() {
+        let line = #"{"error":{"message":"bad key"}}"#
+        XCTAssertEqual(OpenAIStreamParser.parse(dataJSON: line), .apiError("bad key"))
+    }
+}
+
 // MARK: - Configuration
 
 final class ConfigurationTests: XCTestCase {
     func testEnvironmentPrecedence() {
         var config = ProseConfig.default
         ConfigLoader.applyEnvironment([
+            "PROSE_PROVIDER": "openai",
             "PROSE_OLLAMA_URL": "https://ollama.com",
-            "PROSE_MODEL": "gemma3:27b",
-            "PROSE_OLLAMA_KEY": "secret",
+            "PROSE_MODEL": "gpt-4o",
             "PROSE_TEMPERATURE": "0.7",
         ], to: &config)
+        XCTAssertEqual(config.provider, .openai)
         XCTAssertEqual(config.ollamaBaseURL, "https://ollama.com")
-        XCTAssertEqual(config.model, "gemma3:27b")
-        XCTAssertEqual(config.apiKey, "secret")
+        XCTAssertEqual(config.model, "gpt-4o")
         XCTAssertEqual(config.temperature, 0.7, accuracy: 0.0001)
+    }
+
+    func testProviderKeyResolvedFromEnvForActiveProvider() {
+        let config = ConfigLoader.load(
+            path: URL(fileURLWithPath: "/nonexistent-\(UUID().uuidString)"),
+            environment: ["PROSE_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "sk-ant-test"]
+        )
+        XCTAssertEqual(config.provider, .anthropicAPI)
+        XCTAssertEqual(config.apiKey, "sk-ant-test")
+    }
+
+    func testProviderDefaults() {
+        XCTAssertEqual(LLMProvider.anthropicAPI.defaultModel, "claude-opus-4-8")
+        XCTAssertEqual(LLMProvider.anthropicAPI.keychainService, "prose-anthropic-api-key")
+        XCTAssertEqual(LLMProvider.openai.envVarNames, ["PROSE_OPENAI_KEY", "OPENAI_API_KEY"])
+        XCTAssertTrue(LLMProvider.openai.needsKey)
+        XCTAssertFalse(LLMProvider.claudeSubscription.needsKey)
     }
 
     func testLenientPartialDecode() throws {

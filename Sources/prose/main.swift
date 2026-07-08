@@ -18,14 +18,24 @@ func hasFlag(_ name: String) -> Bool { arguments.contains(name) }
 let sampleText = "i think we should maybe consider possibly doing the deploy later tonight if thats ok with everyone and nobody objects to it"
 
 func resolveConfig() -> ProseConfig {
-    var config = ConfigLoader.load()
+    // Inject CLI overrides through the env so ConfigLoader does the provider +
+    // key resolution consistently.
+    var env = ProcessInfo.processInfo.environment
+    if let p = flag("--provider") { env["PROSE_PROVIDER"] = p }
     if hasFlag("--local") {
-        config.ollamaBaseURL = "http://localhost:11434"
-        config.model = "llama3.2:3b"
-        config.apiKey = nil
+        env["PROSE_PROVIDER"] = "ollama"
+        env["PROSE_OLLAMA_URL"] = "http://localhost:11434"
+        env["PROSE_MODEL"] = "llama3.2:3b"
     }
-    if let model = flag("--model") { config.model = model }
-    if let url = flag("--url") { config.ollamaBaseURL = url }
+    if let url = flag("--url") { env["PROSE_OLLAMA_URL"] = url }
+    if let model = flag("--model") { env["PROSE_MODEL"] = model }
+
+    var config = ConfigLoader.load(environment: env)
+    // Switching provider on the CLI without an explicit model → provider default.
+    if flag("--provider") != nil, flag("--model") == nil {
+        config.model = config.provider.defaultModel
+    }
+    if hasFlag("--local") { config.apiKey = nil }
     return config
 }
 
@@ -42,10 +52,11 @@ func printUsage() {
       prose version
 
     OPTIONS (selftest):
-      --text "…"    Text to rewrite (default: a messy sample)
-      --local       Force local Ollama (http://localhost:11434, llama3.2:3b)
-      --model M     Override model
-      --url U       Override Ollama base URL
+      --text "…"       Text to rewrite (default: a messy sample)
+      --provider P     ollama | anthropic | openai | claude-subscription
+      --local          Force local Ollama (http://localhost:11434, llama3.2:3b)
+      --model M        Override model
+      --url U          Override Ollama base URL
     """)
 }
 
@@ -55,12 +66,12 @@ func printUsage() {
 func runSelftest() async -> Int32 {
     let config = resolveConfig()
     let text = flag("--text") ?? sampleText
-    let backend = (config.apiKey?.isEmpty == false) ? "cloud" : "local"
-    FileHandle.standardError.write(Data("prose selftest → \(config.normalizedBaseURL) model=\(config.model) [\(backend)]\n".utf8))
+    let keyState = (config.apiKey?.isEmpty == false) ? "set" : (config.provider.needsKey ? "MISSING" : "n/a")
+    FileHandle.standardError.write(Data("prose selftest → \(config.provider.displayName) model=\(config.model.isEmpty ? "default" : config.model) key=\(keyState)\n".utf8))
     let presenter = StdoutPresenter()
     let pipeline = RewritePipeline(
         capture: FixedTextCapture(text),
-        rewriter: OllamaRewriter(config: config),
+        rewriter: makeRewriter(config: config),
         presenter: presenter
     )
     await pipeline.runAndWait()
@@ -72,11 +83,12 @@ func runConfig() {
     let config = resolveConfig()
     let hasKey = (config.apiKey?.isEmpty == false)
     print("""
-    endpoint:   \(config.normalizedBaseURL)
-    model:      \(config.model)
-    backend:    \(hasKey ? "cloud (ollama.com)" : "local")
-    apiKey:     \(hasKey ? "set (from Keychain/env)" : "none")
+    provider:   \(config.provider.displayName)  (\(config.provider.rawValue))
+    model:      \(config.model.isEmpty ? "(provider default)" : config.model)
+    apiKey:     \(hasKey ? "set (Keychain/env)" : (config.provider.needsKey ? "MISSING" : "not needed"))
+    endpoint:   \(config.provider == .ollama ? config.normalizedBaseURL : "(provider default)")
     temperature:\(config.temperature)
+    rules:      \(config.rules.count)   preferences: \(config.preferences.count)
     hotkey:     \(config.hotkey.label)
     forceClick: \(config.forceClickEnabled)
     configFile: \(ConfigLoader.defaultPath.path)
