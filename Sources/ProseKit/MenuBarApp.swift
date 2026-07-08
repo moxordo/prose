@@ -30,6 +30,8 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var pipeline: RewritePipeline?
     private var triggers: [TriggerSource] = []
+    private var forceClick: ForceClickTrigger?
+    private var trustTimer: Timer?
     private var recordMonitors: [Any] = []
     private var recordTap: CFMachPort?
 
@@ -60,13 +62,10 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
         self.pipeline = pipeline
 
         if config.forceClickEnabled {
-            let forceClick = ForceClickTrigger()
-            forceClick.start { [weak pipeline] in
-                Log.write("trigger: force-click fired")
-                pipeline?.run()
-            }
-            Log.write("force-click trigger: nsEventMonitor=\(forceClick.globalMonitorInstalled) cgEventTap=\(forceClick.tapInstalled)")
-            triggers.append(forceClick)
+            let fc = ForceClickTrigger()
+            self.forceClick = fc
+            armForceClick()
+            triggers.append(fc)
         }
         let hotkey = HotkeyTrigger(config: config.hotkey)
         hotkey.start { [weak pipeline] in
@@ -81,11 +80,40 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
             showWelcomeIfNeeded()
             if !Permissions.isAccessibilityTrusted {
                 Permissions.ensureAccessibility(prompt: true)
+                // A CGEventTap created while untrusted stays dead; re-arm it the
+                // moment the user grants Accessibility, so no relaunch is needed.
+                startTrustPolling()
             }
         }
 
         if let seconds = ProcessInfo.processInfo.environment["PROSE_SMOKE_EXIT_SECONDS"].flatMap(Double.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { NSApp.terminate(nil) }
+        }
+    }
+
+    /// (Re)install the force-click detectors bound to the current pipeline. Called
+    /// at launch and again once Accessibility is granted (so the tap gets trust).
+    private func armForceClick() {
+        guard let fc = forceClick, let pipeline else { return }
+        fc.stop()
+        fc.start { [weak pipeline] in
+            Log.write("trigger: force-click fired")
+            pipeline?.run()
+        }
+        Log.write("force-click armed: nsEvent=\(fc.globalMonitorInstalled) cgTap=\(fc.tapInstalled) trusted=\(Permissions.isAccessibilityTrusted)")
+    }
+
+    private func startTrustPolling() {
+        trustTimer?.invalidate()
+        trustTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                guard let self else { timer.invalidate(); return }
+                guard Permissions.isAccessibilityTrusted else { return }
+                timer.invalidate()
+                self.trustTimer = nil
+                Log.write("accessibility granted at runtime → re-arming force-click")
+                self.armForceClick()
+            }
         }
     }
 
