@@ -5,11 +5,20 @@ import AppKit
 private func proseTapCallback(
     proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refcon: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
-    if type.rawValue == 34, let ns = NSEvent(cgEvent: event) {
-        Log.write("  [CGtap pressure] stage=\(ns.stage) pressure=\(String(format: "%.2f", ns.pressure))")
-    } else if type == .leftMouseDown {
-        Log.write("  [CGtap leftMouseDown]")
+    // Log the actual force fields on every event so we can see whether a
+    // force-click ever surfaces stage>=2 or an elevated pressure anywhere.
+    let ns = NSEvent(cgEvent: event)
+    let stage = ns?.stage ?? -1
+    let nsPressure = ns.map { String(format: "%.2f", $0.pressure) } ?? "?"
+    let mouseField = String(format: "%.2f", event.getDoubleValueField(.mouseEventPressure))
+    let name: String
+    switch type.rawValue {
+    case 34: name = "pressure"
+    case UInt32(CGEventType.leftMouseDown.rawValue): name = "leftMouseDown"
+    case UInt32(CGEventType.leftMouseDragged.rawValue): name = "leftMouseDragged"
+    default: name = "type\(type.rawValue)"
     }
+    Log.write("  [CGtap \(name)] stage=\(stage) nsPressure=\(nsPressure) mouseField=\(mouseField)")
     return Unmanaged.passUnretained(event)
 }
 
@@ -188,7 +197,9 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
         }
         recordMonitors = [p, m].compactMap { $0 }
 
-        let mask: CGEventMask = (1 << 34) | (1 << CGEventType.leftMouseDown.rawValue)
+        let mask: CGEventMask = (1 << 34)
+            | (1 << CGEventType.leftMouseDown.rawValue)
+            | (1 << CGEventType.leftMouseDragged.rawValue)
         if let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
                                        options: .listenOnly, eventsOfInterest: mask,
                                        callback: proseTapCallback, userInfo: nil) {

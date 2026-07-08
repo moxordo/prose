@@ -92,13 +92,24 @@ struct RewritePanelView: View {
     }
 }
 
-/// A non-activating floating panel that presents a rewrite near the cursor.
-/// Non-activating is essential: it means we never steal focus from the app the
-/// user selected text in, so "Replace" (synthetic ⌘V) lands in the right place.
+/// Borderless panels can't become key by default; this subclass opts in so the
+/// panel can receive keyboard shortcuts (Esc / ⌘C / ⌘↩).
+final class KeyablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+/// A floating panel that presents a rewrite near the cursor. It becomes key on
+/// show so keyboard shortcuts work, and remembers the app you triggered from so
+/// "Replace" reactivates it and pastes into the right place.
 @MainActor
 public final class PanelPresenter: NSObject, ResultPresenting {
     private var panel: NSPanel?
     private let model = RewriteViewModel()
+    /// The app that was frontmost when the rewrite was triggered — Replace/Dismiss
+    /// return focus here so ⌘V lands in the original app.
+    private var sourceApp: NSRunningApplication?
+    private var keyMonitor: Any?
 
     public override init() { super.init() }
 
@@ -109,6 +120,8 @@ public final class PanelPresenter: NSObject, ResultPresenting {
     }
 
     public func begin(original: String) {
+        // Capture the source app BEFORE we show/activate our own panel.
+        sourceApp = NSWorkspace.shared.frontmostApplication
         model.original = original
         model.rewrite = ""
         model.errorText = ""
@@ -138,21 +151,56 @@ public final class PanelPresenter: NSObject, ResultPresenting {
     private func showPanel() {
         let panel = existingOrNewPanel()
         positionNearCursor(panel)
-        panel.orderFrontRegardless()
+        // Activate + make key so keyboard shortcuts reach the panel.
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        installKeyMonitor()
+    }
+
+    // MARK: Keyboard shortcuts (Esc / ⌘C / ⌘↩)
+
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleKey(event) ?? event
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+    }
+
+    /// Returns nil to consume the event, or the event to pass it through.
+    private func handleKey(_ event: NSEvent) -> NSEvent? {
+        let cmd = event.modifierFlags.contains(.command)
+        switch event.keyCode {
+        case 53:  // Esc → Dismiss
+            dismiss()
+            return nil
+        case 36, 76:  // Return / keypad Enter → ⌘↩ Replace
+            if cmd, model.phase == .done { replace(); return nil }
+        default:  // ⌘C → Copy
+            if cmd, event.charactersIgnoringModifiers?.lowercased() == "c", model.phase == .done {
+                copyRewrite()
+                return nil
+            }
+        }
+        return event
     }
 
     private func existingOrNewPanel() -> NSPanel {
         if let panel { return panel }
         let view = RewritePanelView(
             model: model,
-            onCopy: { [weak self] in self?.copy() },
+            onCopy: { [weak self] in self?.copyRewrite() },
             onReplace: { [weak self] in self?.replace() },
             onDismiss: { [weak self] in self?.dismiss() }
         )
         let hosting = NSHostingView(rootView: view)
-        let panel = NSPanel(
+        let panel = KeyablePanel(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 240),
-            styleMask: [.nonactivatingPanel, .fullSizeContentView, .borderless],
+            styleMask: [.fullSizeContentView, .borderless],
             backing: .buffered,
             defer: false
         )
@@ -207,20 +255,29 @@ public final class PanelPresenter: NSObject, ResultPresenting {
 
     // MARK: Actions
 
-    private func copy() {
+    private func copyRewrite() {
         Pasteboard.setString(model.rewrite)
+        dismiss()
     }
 
     private func replace() {
         Pasteboard.setString(model.rewrite)
-        dismiss()
-        // Give focus a beat to return to the source app, then paste.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+        closePanel()
+        // Return focus to the original app, then paste.
+        sourceApp?.activate()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
             Keyboard.postComboV()
         }
     }
 
     public func dismiss() {
+        closePanel()
+        // Hand focus back to where the user was working.
+        sourceApp?.activate()
+    }
+
+    private func closePanel() {
+        removeKeyMonitor()
         panel?.orderOut(nil)
     }
 

@@ -40,9 +40,12 @@ private func forceClickTapCallback(
         trigger.reenableTap()
         return Unmanaged.passUnretained(event)
     }
-    if type.rawValue == 34, let ns = NSEvent(cgEvent: event) {
+    // Fire on ANY event whose NSEvent stage reaches the force-click detent (2) —
+    // pressure events (type 34) don't reach the session tap, but the force info
+    // may ride on the leftMouseDown/leftMouseDragged the tap DOES receive.
+    if let ns = NSEvent(cgEvent: event), ns.stage >= 2 {
         let stage = ns.stage
-        Task { @MainActor in trigger.handleStage(stage, source: "cgtap") }
+        Task { @MainActor in trigger.handleStage(stage, source: "cgtap-t\(type.rawValue)") }
     }
     return Unmanaged.passUnretained(event)
 }
@@ -92,7 +95,11 @@ public final class ForceClickTrigger: TriggerSource {
     }
 
     private func installTap() {
-        let mask: CGEventMask = (1 << 34) // NSEventType.pressure
+        // Pressure (34) in case it ever flows, plus the mouse events that DO reach
+        // the tap — a force click may expose its stage on the mouse-down itself.
+        let mask: CGEventMask = (1 << 34)
+            | (1 << CGEventType.leftMouseDown.rawValue)
+            | (1 << CGEventType.leftMouseDragged.rawValue)
         let refcon = Unmanaged.passUnretained(self).toOpaque()
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
