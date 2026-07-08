@@ -26,9 +26,12 @@ private func proseTapCallback(
 /// The menu-bar (LSUIElement/accessory) application. Owns the status item, the
 /// triggers, and the pipeline. No Dock icon, no main window.
 @MainActor
-public final class MenuBarApp: NSObject, NSApplicationDelegate {
+public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var config: ProseConfig
     private var statusItem: NSStatusItem?
+    private var providerMenuItem: NSMenuItem?
+    private var modelMenuItem: NSMenuItem?
+    private var accessibilityMenuItem: NSMenuItem?
     private var pipeline: RewritePipeline?
     private var presenter: PanelPresenter?
     private var capture: SelectionCapturing?
@@ -138,7 +141,8 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
         // Reload so the Keychain-resolved API key is re-attached, then rebuild.
         config = ConfigLoader.load()
         buildPipeline()
-        Log.write("settings saved: rules=\(config.rules.count) prefs=\(config.preferences.count) model=\(config.model)")
+        refreshMenuItems()
+        Log.write("settings saved: rules=\(config.rules.count) prefs=\(config.preferences.count) provider=\(config.provider.rawValue) model=\(config.model)")
     }
 
     private func startTrustPolling() {
@@ -151,6 +155,7 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
                 self.trustTimer = nil
                 Log.write("accessibility granted at runtime → re-arming force-click")
                 self.armForceClick()
+                self.refreshMenuItems()
             }
         }
     }
@@ -172,16 +177,25 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
         Log.write("statusItem: button=\(item.button != nil) hasImage=\(item.button?.image != nil) frame=\(item.button?.frame ?? .zero)")
 
         let menu = NSMenu()
+        menu.delegate = self  // refresh dynamic items each time the menu opens
         menu.addItem(action("Rewrite Selection  (\(config.hotkey.label))", #selector(triggerNow)))
         menu.addItem(action("Preferences…", #selector(openSettings), key: ","))
         menu.addItem(.separator())
 
-        menu.addItem(disabled: "\(config.provider.displayName)")
-        menu.addItem(disabled: "Model: \(config.model.isEmpty ? "default" : config.model)")
-        menu.addItem(action(
-            Permissions.isAccessibilityTrusted ? "Accessibility: granted ✓" : "⚠️ Grant Accessibility…",
-            #selector(openAccessibility)
-        ))
+        let providerItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        providerItem.isEnabled = false
+        menu.addItem(providerItem)
+        providerMenuItem = providerItem
+
+        let modelItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        modelItem.isEnabled = false
+        menu.addItem(modelItem)
+        modelMenuItem = modelItem
+
+        let axItem = action("", #selector(openAccessibility))
+        menu.addItem(axItem)
+        accessibilityMenuItem = axItem
+
         menu.addItem(.separator())
         menu.addItem(action("Record force-click test (20s)", #selector(recordForceClickTest)))
         menu.addItem(action("Open Log", #selector(openLog)))
@@ -190,12 +204,28 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate {
 
         item.menu = menu
         statusItem = item
+        refreshMenuItems()
+    }
+
+    /// Update the provider / model / Accessibility lines to reflect *current*
+    /// state — the Accessibility grant, in particular, can flip after launch.
+    private func refreshMenuItems() {
+        providerMenuItem?.title = config.provider.displayName
+        modelMenuItem?.title = "Model: \(config.model.isEmpty ? "default" : config.model)"
+        accessibilityMenuItem?.title = Permissions.isAccessibilityTrusted
+            ? "Accessibility: granted ✓"
+            : "⚠️ Grant Accessibility…"
     }
 
     private func action(_ title: String, _ selector: Selector, key: String = "") -> NSMenuItem {
         let item = NSMenuItem(title: title, action: selector, keyEquivalent: key)
         item.target = self
         return item
+    }
+
+    // NSMenuDelegate: refresh live state (esp. the Accessibility grant) on open.
+    public func menuNeedsUpdate(_ menu: NSMenu) {
+        refreshMenuItems()
     }
 
     // MARK: Welcome

@@ -6,11 +6,15 @@ import SwiftUI
 /// in the Keychain) and rebuilds the pipeline so changes apply to the next rewrite.
 @MainActor
 public struct SettingsView: View {
+    static let customTag = "__custom__"
+
     @State private var provider: LLMProvider
     @State private var apiKey: String = ""
     @State private var rulesText: String
     @State private var preferencesText: String
-    @State private var model: String
+    /// The selected preset (or `customTag`); `customModel` holds a typed id.
+    @State private var modelChoice: String
+    @State private var customModel: String
     @State private var temperature: Double
 
     private let baseConfig: ProseConfig
@@ -26,7 +30,16 @@ public struct SettingsView: View {
         _provider = State(initialValue: config.provider)
         _rulesText = State(initialValue: config.rules.joined(separator: "\n"))
         _preferencesText = State(initialValue: config.preferences.joined(separator: "\n"))
-        _model = State(initialValue: config.model)
+        if config.model.isEmpty {
+            _modelChoice = State(initialValue: config.provider.defaultModel)
+            _customModel = State(initialValue: "")
+        } else if config.provider.modelPresets.contains(config.model) {
+            _modelChoice = State(initialValue: config.model)
+            _customModel = State(initialValue: "")
+        } else {
+            _modelChoice = State(initialValue: Self.customTag)
+            _customModel = State(initialValue: config.model)
+        }
         _temperature = State(initialValue: config.temperature)
         self.onSave = onSave
         self.onClose = onClose
@@ -58,14 +71,24 @@ public struct SettingsView: View {
             HStack(alignment: .bottom, spacing: 24) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Model").font(.caption).foregroundStyle(.secondary)
-                    TextField("gemma3:27b", text: $model)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 200)
+                    HStack(spacing: 8) {
+                        Picker("Model", selection: $modelChoice) {
+                            ForEach(provider.modelPresets, id: \.self) { Text($0).tag($0) }
+                            Text("Custom…").tag(Self.customTag)
+                        }
+                        .labelsHidden()
+                        .frame(width: 190)
+                        if modelChoice == Self.customTag {
+                            TextField("model id", text: $customModel)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 160)
+                        }
+                    }
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Creativity: \(temperature, specifier: "%.2f")")
                         .font(.caption).foregroundStyle(.secondary)
-                    Slider(value: $temperature, in: 0...1).frame(width: 160)
+                    Slider(value: $temperature, in: 0...1).frame(width: 140)
                 }
             }
 
@@ -96,7 +119,8 @@ public struct SettingsView: View {
             .labelsHidden()
             .frame(maxWidth: 320)
             .onChange(of: provider) { _, newValue in
-                model = newValue.defaultModel
+                modelChoice = newValue.defaultModel
+                customModel = ""
                 apiKey = ""
             }
 
@@ -160,7 +184,9 @@ public struct SettingsView: View {
         updated.provider = provider
         updated.rules = lines(rulesText)
         updated.preferences = lines(preferencesText)
-        updated.model = model.trimmingCharacters(in: .whitespaces)
+        updated.model = modelChoice == Self.customTag
+            ? customModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            : modelChoice
         updated.temperature = temperature
 
         // Persist a freshly-entered key into the provider's Keychain service.

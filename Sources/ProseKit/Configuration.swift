@@ -36,6 +36,17 @@ public enum LLMProvider: String, Codable, Sendable, CaseIterable {
         }
     }
 
+    /// Common models offered in the Settings dropdown (a "Custom…" option always
+    /// lets the user type any other id).
+    public var modelPresets: [String] {
+        switch self {
+        case .claudeSubscription: return ["sonnet", "opus", "haiku"]
+        case .anthropicAPI: return ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5", "claude-opus-4-7"]
+        case .ollama: return ["gemma3:27b", "gpt-oss:120b", "llama3.2:3b", "qwen3-coder:480b", "deepseek-v3.1:671b"]
+        case .openai: return ["gpt-4o", "gpt-4o-mini", "gpt-4.1"]
+        }
+    }
+
     /// Env vars consulted (in order) for this provider's key.
     public var envVarNames: [String] {
         switch self {
