@@ -182,6 +182,30 @@ final class ConfigurationTests: XCTestCase {
     }
 }
 
+// MARK: - Hotkey recording
+
+final class HotkeyConfigTests: XCTestCase {
+    func testMakeBuildsCarbonModifiersAndGlyphLabel() {
+        let hk = HotkeyConfig.make(keyCode: 15, control: false, option: true, shift: false, command: true, keyName: "R")
+        XCTAssertEqual(hk?.keyCode, 15)
+        XCTAssertEqual(hk?.modifiers, HotkeyConfig.optionKey | HotkeyConfig.cmdKey)  // 2304
+        XCTAssertEqual(hk?.label, "⌥⌘R")
+        XCTAssertEqual(hk, HotkeyConfig.default)
+    }
+
+    func testMakeUsesCanonicalModifierOrder() {
+        let hk = HotkeyConfig.make(keyCode: 49, control: true, option: true, shift: true, command: true, keyName: "␣")
+        XCTAssertEqual(hk?.label, "⌃⌥⇧⌘␣")
+        XCTAssertEqual(hk?.modifiers,
+                       HotkeyConfig.controlKey | HotkeyConfig.optionKey | HotkeyConfig.shiftKey | HotkeyConfig.cmdKey)
+    }
+
+    func testMakeRejectsNoModifierOrShiftOnly() {
+        XCTAssertNil(HotkeyConfig.make(keyCode: 15, control: false, option: false, shift: false, command: false, keyName: "R"))
+        XCTAssertNil(HotkeyConfig.make(keyCode: 15, control: false, option: false, shift: true, command: false, keyName: "R"))
+    }
+}
+
 // MARK: - Pipeline (capture → rewrite → present) with test doubles
 
 /// A rewriter that always throws, for the failure path.

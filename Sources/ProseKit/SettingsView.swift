@@ -16,6 +16,7 @@ public struct SettingsView: View {
     @State private var modelChoice: String
     @State private var customModel: String
     @State private var temperature: Double
+    @State private var hotkey: HotkeyConfig
 
     private let baseConfig: ProseConfig
     private let onSave: (ProseConfig) -> Void
@@ -41,6 +42,7 @@ public struct SettingsView: View {
             _customModel = State(initialValue: config.model)
         }
         _temperature = State(initialValue: config.temperature)
+        _hotkey = State(initialValue: config.hotkey)
         self.onSave = onSave
         self.onClose = onClose
     }
@@ -89,6 +91,18 @@ public struct SettingsView: View {
                     Text("Creativity: \(temperature, specifier: "%.2f")")
                         .font(.caption).foregroundStyle(.secondary)
                     Slider(value: $temperature, in: 0...1).frame(width: 140)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Rewrite shortcut").font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    HotkeyRecorder(hotkey: $hotkey)
+                        .frame(width: 200, height: 24)
+                    Button("Reset") { hotkey = .default }
+                        .controlSize(.small)
+                    Text("click, then press the keys")
+                        .font(.caption2).foregroundStyle(.tertiary)
                 }
             }
 
@@ -188,6 +202,7 @@ public struct SettingsView: View {
             ? customModel.trimmingCharacters(in: .whitespacesAndNewlines)
             : modelChoice
         updated.temperature = temperature
+        updated.hotkey = hotkey
 
         // Persist a freshly-entered key into the provider's Keychain service.
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -29,9 +29,11 @@ private func proseTapCallback(
 public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var config: ProseConfig
     private var statusItem: NSStatusItem?
+    private var rewriteMenuItem: NSMenuItem?
     private var providerMenuItem: NSMenuItem?
     private var modelMenuItem: NSMenuItem?
     private var accessibilityMenuItem: NSMenuItem?
+    private var hotkeyTrigger: HotkeyTrigger?
     private var pipeline: RewritePipeline?
     private var presenter: PanelPresenter?
     private var capture: SelectionCapturing?
@@ -72,13 +74,7 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             armForceClick()
             triggers.append(fc)
         }
-        let hotkey = HotkeyTrigger(config: config.hotkey)
-        hotkey.start { [weak self] in
-            Log.write("trigger: hotkey (\(self?.config.hotkey.label ?? "")) fired")
-            self?.pipeline?.run()
-        }
-        Log.write("hotkey trigger registered: \(config.hotkey.label)")
-        triggers.append(hotkey)
+        armHotkey()
 
         let suppressUI = ProcessInfo.processInfo.environment["PROSE_SUPPRESS_AX_PROMPT"] == "1"
         if !suppressUI {
@@ -101,6 +97,20 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func buildPipeline() {
         guard let presenter, let capture else { return }
         pipeline = RewritePipeline(capture: capture, rewriter: makeRewriter(config: config), presenter: presenter)
+    }
+
+    /// (Re)register the global rewrite hotkey. Called at launch and whenever the
+    /// user changes it in Preferences — Carbon `RegisterEventHotKey` needs no
+    /// Accessibility, so this always takes effect immediately.
+    private func armHotkey() {
+        hotkeyTrigger?.stop()
+        let trigger = HotkeyTrigger(config: config.hotkey)
+        trigger.start { [weak self] in
+            Log.write("trigger: hotkey (\(self?.config.hotkey.label ?? "")) fired")
+            self?.pipeline?.run()
+        }
+        hotkeyTrigger = trigger
+        Log.write("hotkey armed: \(config.hotkey.label)")
     }
 
     private func armForceClick() {
@@ -141,8 +151,9 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Reload so the Keychain-resolved API key is re-attached, then rebuild.
         config = ConfigLoader.load()
         buildPipeline()
+        armHotkey()  // hotkey may have changed
         refreshMenuItems()
-        Log.write("settings saved: rules=\(config.rules.count) prefs=\(config.preferences.count) provider=\(config.provider.rawValue) model=\(config.model)")
+        Log.write("settings saved: rules=\(config.rules.count) prefs=\(config.preferences.count) provider=\(config.provider.rawValue) model=\(config.model) hotkey=\(config.hotkey.label)")
     }
 
     private func startTrustPolling() {
@@ -178,7 +189,9 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let menu = NSMenu()
         menu.delegate = self  // refresh dynamic items each time the menu opens
-        menu.addItem(action("Rewrite Selection  (\(config.hotkey.label))", #selector(triggerNow)))
+        let rewriteItem = action("Rewrite Selection", #selector(triggerNow))
+        menu.addItem(rewriteItem)
+        rewriteMenuItem = rewriteItem
         menu.addItem(action("Preferences…", #selector(openSettings), key: ","))
         menu.addItem(.separator())
 
@@ -210,6 +223,7 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Update the provider / model / Accessibility lines to reflect *current*
     /// state — the Accessibility grant, in particular, can flip after launch.
     private func refreshMenuItems() {
+        rewriteMenuItem?.title = "Rewrite Selection  (\(config.hotkey.label))"
         providerMenuItem?.title = config.provider.displayName
         modelMenuItem?.title = "Model: \(config.model.isEmpty ? "default" : config.model)"
         accessibilityMenuItem?.title = Permissions.isAccessibilityTrusted

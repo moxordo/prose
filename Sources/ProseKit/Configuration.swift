@@ -200,6 +200,33 @@ public struct HotkeyConfig: Codable, Sendable, Equatable {
 
     // cmdKey (0x0100) | optionKey (0x0800) = 0x0900 = 2304 ; kVK_ANSI_R = 15
     public static let `default` = HotkeyConfig(keyCode: 15, modifiers: 2304, label: "⌥⌘R")
+
+    // Carbon modifier masks.
+    static let cmdKey: UInt32 = 0x0100
+    static let shiftKey: UInt32 = 0x0200
+    static let optionKey: UInt32 = 0x0800
+    static let controlKey: UInt32 = 0x1000
+
+    /// Build a hotkey from a recorded combination. Returns nil if no non-shift
+    /// modifier is present (a global hotkey needs ⌘/⌥/⌃ — shift alone won't do).
+    /// `keyName` is the display glyph for the key (e.g. "R", "↩", "F5").
+    public static func make(
+        keyCode: UInt32, control: Bool, option: Bool, shift: Bool, command: Bool, keyName: String
+    ) -> HotkeyConfig? {
+        guard command || option || control else { return nil }
+        var carbon: UInt32 = 0
+        if command { carbon |= cmdKey }
+        if option { carbon |= optionKey }
+        if shift { carbon |= shiftKey }
+        if control { carbon |= controlKey }
+        var label = ""
+        if control { label += "⌃" }
+        if option { label += "⌥" }
+        if shift { label += "⇧" }
+        if command { label += "⌘" }
+        label += keyName
+        return HotkeyConfig(keyCode: keyCode, modifiers: carbon, label: label)
+    }
 }
 
 public enum ConfigLoader {
