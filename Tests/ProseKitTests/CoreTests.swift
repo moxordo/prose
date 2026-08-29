@@ -292,3 +292,62 @@ final class PasteboardTests: XCTestCase {
     }
 }
 #endif
+
+// MARK: - Claude CLI result envelope (stdout is not the rewrite; the envelope is)
+
+final class ClaudeSubscriptionRewriterTests: XCTestCase {
+    private let envelope = #"{"type":"result","subtype":"success","is_error":false,"result":"Shorter.","session_id":"x"}"#
+
+    func testCleanEnvelope() throws {
+        XCTAssertEqual(try ClaudeSubscriptionRewriter.extractResult(stdout: envelope + "\n", stderr: "", exitCode: 0),
+                       "Shorter.")
+    }
+
+    func testChatterAroundEnvelopeIsIgnored() throws {
+        // The exact leak seen in the panel: MCP client warnings sharing stdout with the result.
+        let noise = "Client.listTools() called but server does not advertise tools capability - returning empty list\n"
+        let stdout = noise + envelope + "\n" + noise
+        XCTAssertEqual(try ClaudeSubscriptionRewriter.extractResult(stdout: stdout, stderr: "", exitCode: 0),
+                       "Shorter.")
+    }
+
+    func testEnvelopeWinsOverFailingExitCode() throws {
+        // A failing SessionEnd hook exits non-zero after the rewrite already succeeded.
+        XCTAssertEqual(try ClaudeSubscriptionRewriter.extractResult(
+            stdout: envelope, stderr: "SessionEnd hook failed: node: command not found", exitCode: 1),
+                       "Shorter.")
+    }
+
+    func testIsErrorSurfacesMessageEvenWithZeroExit() {
+        let err = #"{"type":"result","is_error":true,"result":"Not logged in · Please run /login"}"#
+        XCTAssertThrowsError(try ClaudeSubscriptionRewriter.extractResult(stdout: err, stderr: "", exitCode: 0)) {
+            XCTAssertEqual($0 as? RewriteError, .api("claude CLI: Not logged in · Please run /login"))
+        }
+    }
+
+    func testNoEnvelopeFallsBackToStderrAndExitCode() {
+        XCTAssertThrowsError(try ClaudeSubscriptionRewriter.extractResult(stdout: "", stderr: "boom", exitCode: 2)) {
+            XCTAssertEqual($0 as? RewriteError, .api("claude CLI failed (exit 2): boom"))
+        }
+        XCTAssertThrowsError(try ClaudeSubscriptionRewriter.extractResult(stdout: "garbage", stderr: "", exitCode: 0))
+    }
+
+    func testEmptyResultIsEmptyResponse() {
+        let empty = #"{"type":"result","is_error":false,"result":"  "}"#
+        XCTAssertThrowsError(try ClaudeSubscriptionRewriter.extractResult(stdout: empty, stderr: "", exitCode: 0)) {
+            XCTAssertEqual($0 as? RewriteError, .emptyResponse)
+        }
+    }
+
+    func testIsolationArgsKeepTheCLIQuiet() {
+        // Each flag closes a real failure (see the doc comment on isolationArgs).
+        let args = ClaudeSubscriptionRewriter.isolationArgs
+        XCTAssertTrue(args.contains("--strict-mcp-config"))
+        XCTAssertTrue(args.contains("--no-session-persistence"))
+        for (flag, value) in [("--output-format", "json"), ("--tools", ""), ("--setting-sources", "")] {
+            let i = try! XCTUnwrap(args.firstIndex(of: flag))
+            XCTAssertEqual(args[i + 1], value, flag)
+        }
+        XCTAssertFalse(args.contains("--bare"), "--bare skips the keychain → subscription login is lost")
+    }
+}

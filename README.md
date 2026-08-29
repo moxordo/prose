@@ -55,10 +55,12 @@ Pick a provider in **Preferences… (⌘,)** or via `config.json`'s `provider` f
 
 | Provider (`provider`) | Auth | Default model | Notes |
 |---|---|---|---|
-| **Claude — subscription** (`claude-subscription`) | The signed-in `claude` CLI (your Claude.ai OAuth) | `sonnet` | No API key, no per-token billing; shells out to Claude Code |
+| **Claude — subscription** (`claude-subscription`) | The signed-in `claude` CLI (your Claude.ai OAuth) | `sonnet` | No API key, no per-token billing; shells out to `claude -p` in isolation mode (no MCP servers, tools, hooks/plugins, or saved transcript — see below) |
 | **Claude — API key** (`anthropic`) | `ANTHROPIC_API_KEY` | `claude-opus-4-8` | Anthropic Messages API; no `temperature`, no thinking (fast) |
 | **Ollama** (`ollama`) | optional key | `gemma3:27b` (cloud) / `llama3.2:3b` (local) | `ollamaBaseURL: https://ollama.com` + key, or `http://localhost:11434` |
 | **OpenAI / ChatGPT** (`openai`) | `OPENAI_API_KEY` | `gpt-4o` | Chat Completions API |
+
+The subscription backend runs `claude -p … --output-format json --strict-mcp-config --tools "" --setting-sources "" --no-session-persistence` with your login shell's `PATH`, and reads the rewrite from the JSON `result` envelope. That keeps your Claude Code MCP servers, hooks, and plugins out of every rewrite — their startup chatter used to leak into the panel, and a hook that needed `node` failed under the app's bare PATH. (`--bare` would be simpler but also skips the keychain, so the subscription login is lost.)
 
 **Key resolution** (per active provider): `PROSE_<PROVIDER>_KEY` / `<PROVIDER>_API_KEY` env → Keychain (`prose-<provider>-api-key`) → nothing. Keys live in the **Keychain**, never in config.json. Settings writes a pasted key into the right Keychain service automatically.
 
