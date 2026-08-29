@@ -52,6 +52,7 @@ public func makeRewriter(config: ProseConfig, session: URLSession = .shared) -> 
     case .anthropicAPI: return AnthropicRewriter(config: config, session: session)
     case .openai: return OpenAIRewriter(config: config, session: session)
     case .claudeSubscription: return ClaudeSubscriptionRewriter(config: config)
+    case .codexSubscription: return CodexSubscriptionRewriter(config: config)
     }
 }
 

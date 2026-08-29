@@ -150,7 +150,9 @@ public struct SettingsView: View {
                 Text("Stored in the Keychain, never in config.json. Leave blank to keep the current key.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("Uses the signed-in `claude` CLI (your subscription) — no API key needed.")
+                Text(provider == .codexSubscription
+                     ? "Uses the signed-in `codex` CLI (your ChatGPT subscription) — no API key needed."
+                     : "Uses the signed-in `claude` CLI (your subscription) — no API key needed.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -161,7 +163,7 @@ public struct SettingsView: View {
         case .anthropicAPI: return "Paste your ANTHROPIC_API_KEY"
         case .openai: return "Paste your OPENAI_API_KEY"
         case .ollama: return "Ollama Cloud key (blank for local)"
-        case .claudeSubscription: return ""
+        case .claudeSubscription, .codexSubscription: return ""
         }
     }
 
