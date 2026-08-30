@@ -40,6 +40,7 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var triggers: [TriggerSource] = []
     private var forceClick: ForceClickTrigger?
     private var trustTimer: Timer?
+    private var resetAccessibilityMenuItem: NSMenuItem?
     private var settingsWindow: NSWindow?
     private var recordMonitors: [Any] = []
     private var recordTap: CFMachPort?
@@ -61,7 +62,7 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        Log.startSession("Prose launch — accessibility=\(Permissions.isAccessibilityTrusted) policy=\(NSApp.activationPolicy().rawValue)")
+        Log.startSession("Prose launch — accessibility=\(Permissions.isAccessibilityTrusted) signature=\(Permissions.signature.summary) policy=\(NSApp.activationPolicy().rawValue)")
         setupStatusItem()
 
         self.presenter = PanelPresenter()
@@ -208,6 +209,9 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let axItem = action("", #selector(openAccessibility))
         menu.addItem(axItem)
         accessibilityMenuItem = axItem
+        let resetItem = action("Reset Accessibility grant & re-prompt…", #selector(resetAccessibilityGrant))
+        menu.addItem(resetItem)
+        resetAccessibilityMenuItem = resetItem
 
         menu.addItem(.separator())
         menu.addItem(action("Record force-click test (20s)", #selector(recordForceClickTest)))
@@ -226,9 +230,9 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rewriteMenuItem?.title = "Rewrite Selection  (\(config.hotkey.label))"
         providerMenuItem?.title = config.provider.displayName
         modelMenuItem?.title = "Model: \(config.model.isEmpty ? "default" : config.model)"
-        accessibilityMenuItem?.title = Permissions.isAccessibilityTrusted
-            ? "Accessibility: granted ✓"
-            : "⚠️ Grant Accessibility…"
+        let trusted = Permissions.isAccessibilityTrusted
+        accessibilityMenuItem?.title = trusted ? "Accessibility: granted ✓" : "⚠️ Grant Accessibility…"
+        resetAccessibilityMenuItem?.isHidden = trusted
     }
 
     private func action(_ title: String, _ selector: Selector, key: String = "") -> NSMenuItem {
@@ -253,9 +257,16 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let alert = NSAlert()
         alert.messageText = "Prose is running ✨"
+        let signature = Permissions.signature
+        let staleNote = signature.adHoc
+            ? "this build is ad-hoc signed, so the grant resets on every rebuild"
+            : "this build is signed as “\(signature.summary)”, so from now on the grant persists across rebuilds"
         let axLine = trusted
             ? "Accessibility: granted ✓"
-            : "⚠️ Accessibility is NOT granted yet — it's required to read your selection and to trigger on force-click. Grant it, then relaunch."
+            : """
+            ⚠️ Accessibility is NOT granted — it's required to read your selection and to trigger on force-click.
+            If Prose already shows as ON in the list, that grant belongs to an older build (\(staleNote)). Use “Reset & re-grant”, then switch Prose on again. No relaunch needed — Prose re-arms itself.
+            """
         alert.informativeText = """
             Select text in any app, then force-click it — or press \(config.hotkey.label) — to get a clearer rewrite.
 
@@ -268,8 +279,13 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         if !trusted {
             alert.addButton(withTitle: "Open Accessibility Settings")
+            alert.addButton(withTitle: "Reset & re-grant")
             alert.addButton(withTitle: "Later")
-            if alert.runModal() == .alertFirstButtonReturn { openAccessibility() }
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: openAccessibility()
+            case .alertSecondButtonReturn: resetAccessibilityGrant()
+            default: break
+            }
         } else {
             alert.addButton(withTitle: "Got it")
             alert.runModal()
@@ -279,6 +295,16 @@ public final class MenuBarApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Actions
 
     @objc private func triggerNow() { pipeline?.run() }
+
+    /// A grant from an older build shows as ON yet doesn't apply to this
+    /// binary; drop it so the system prompt and the Settings toggle start clean.
+    @objc private func resetAccessibilityGrant() {
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.moxordo.prose"
+        let ok = Permissions.resetAccessibilityGrant(bundleID: bundleID)
+        Log.write("accessibility grant reset (\(bundleID)): \(ok ? "ok" : "FAILED") — signature=\(Permissions.signature.summary)")
+        startTrustPolling()
+        openAccessibility()
+    }
 
     @objc private func openAccessibility() {
         Permissions.ensureAccessibility(prompt: true)

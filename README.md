@@ -12,6 +12,8 @@ curl -fsSL https://raw.githubusercontent.com/moxordo/prose/main/install.sh | bas
 
 Builds from source on your machine (so Gatekeeper doesn't quarantine it) into `~/Applications/Prose.app`, writes a default config, and launches it. Then **grant Accessibility** when prompted (System Settings → Privacy & Security → Accessibility) — it's required to read your selection and post ⌘V.
 
+The installer signs the app with your **Apple Development / Developer ID** identity if you have one (override with `PROSE_SIGN_IDENTITY`), so the Accessibility grant survives rebuilds. Without one it falls back to an ad-hoc signature, which macOS keys to that exact build: after a rebuild, Prose still shows as ON in Accessibility but isn't trusted — use the app's **Reset & re-grant** button (or menu item) and switch it on again.
+
 Requirements: macOS 14+, Xcode Command Line Tools (`xcode-select --install`), and an [Ollama Cloud](https://ollama.com) key *or* a local Ollama.
 
 Uninstall: `curl -fsSL https://raw.githubusercontent.com/moxordo/prose/main/uninstall.sh | bash` (add `--purge` to also drop config + key).
@@ -105,7 +107,7 @@ PROSE_LIVE_OLLAMA=1 PROSE_OLLAMA_URL=https://ollama.com PROSE_MODEL=gemma3:27b P
 
 ## Notes & limits
 
-- **Accessibility is mandatory and manual** — no app can self-grant it.
+- **Accessibility is mandatory and manual** — no app can self-grant it. A grant is keyed to the app's code-signing requirement; ad-hoc builds lose it on every rebuild (the launch dialog explains and offers **Reset & re-grant**, which runs `tccutil reset Accessibility com.moxordo.prose` and re-prompts). The launch log line records the signature kind.
 - **Force-click** is best-effort: macOS doesn't broadcast pressure events globally, so ⌥⌘R is the reliable trigger. Diagnostics land in `~/Library/Logs/Prose.log`.
 - Not sandboxed / not notarized → installs by building locally (no Gatekeeper quarantine).
 - Password/secure-input fields won't expose text (by design).

@@ -1,5 +1,6 @@
 #!/bin/bash
-# Assemble Prose.app from the SPM build and ad-hoc codesign it.
+# Assemble Prose.app from the SPM build and codesign it (scripts/codesign.sh picks
+# a stable identity so the Accessibility grant survives rebuilds).
 # Usage: scripts/bundle.sh [debug|release]
 set -euo pipefail
 
@@ -18,11 +19,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/prose"
 cp scripts/Info.plist "$APP/Contents/Info.plist"
 
-# Ad-hoc signature (stable identity so Accessibility grant sticks across rebuilds
-# is best-effort with "-"; for a durable grant, sign with a real identity).
-echo "▸ codesigning (ad-hoc)…"
-codesign --force --sign - --identifier com.moxordo.prose "$APP"
-codesign --verify --verbose "$APP" 2>&1 | sed 's/^/  /' || true
+echo "▸ codesigning…"
+bash scripts/codesign.sh "$APP" | sed 's/^/  /'
 
 echo "▸ built $APP"
 echo "  run:   open $APP        (or: \"$APP/Contents/MacOS/prose\")"

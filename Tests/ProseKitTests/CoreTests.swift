@@ -473,3 +473,13 @@ final class SubprocessTests: XCTestCase {
         XCTAssertEqual(r.code, 3)
     }
 }
+
+final class PermissionsTests: XCTestCase {
+    func testSignatureIsDescribed() {
+        // The test host is Apple-signed; the point is that the lookup never
+        // yields an empty summary the dialog would print verbatim.
+        let sig = Permissions.signature
+        XCTAssertFalse(sig.summary.isEmpty)
+        XCTAssertFalse(sig.adHoc && sig.summary == "signed")
+    }
+}
