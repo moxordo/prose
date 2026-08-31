@@ -4,6 +4,7 @@ import Foundation
 /// from its own Keychain service + env vars, and has its own default model.
 public enum LLMProvider: String, Codable, Sendable, CaseIterable {
     case claudeSubscription = "claude-subscription"  // via the logged-in `claude` CLI (agent SDK / OAuth)
+    case codexSubscription = "codex-subscription"    // via the logged-in `codex` CLI (ChatGPT plan)
     case anthropicAPI = "anthropic"                  // via ANTHROPIC_API_KEY
     case ollama                                      // local or ollama.com (key)
     case openai                                      // ChatGPT / OpenAI
@@ -11,6 +12,7 @@ public enum LLMProvider: String, Codable, Sendable, CaseIterable {
     public var displayName: String {
         switch self {
         case .claudeSubscription: return "Claude (subscription · CLI)"
+        case .codexSubscription: return "Codex (ChatGPT subscription · CLI)"
         case .anthropicAPI: return "Claude (API key)"
         case .ollama: return "Ollama (local / cloud)"
         case .openai: return "OpenAI / ChatGPT"
@@ -20,6 +22,7 @@ public enum LLMProvider: String, Codable, Sendable, CaseIterable {
     public var defaultModel: String {
         switch self {
         case .claudeSubscription: return "sonnet"       // `claude --model` alias; "" also works
+        case .codexSubscription: return "gpt-5.6-sol"   // `codex -m`; "" = the CLI default
         case .anthropicAPI: return "claude-opus-4-8"
         case .ollama: return "gemma3:27b"
         case .openai: return "gpt-4o"
@@ -29,7 +32,7 @@ public enum LLMProvider: String, Codable, Sendable, CaseIterable {
     /// Keychain service holding this provider's key, or nil if it needs no key.
     public var keychainService: String? {
         switch self {
-        case .claudeSubscription: return nil
+        case .claudeSubscription, .codexSubscription: return nil
         case .anthropicAPI: return "prose-anthropic-api-key"
         case .ollama: return "prose-ollama-api-key"
         case .openai: return "prose-openai-api-key"
@@ -41,6 +44,7 @@ public enum LLMProvider: String, Codable, Sendable, CaseIterable {
     public var modelPresets: [String] {
         switch self {
         case .claudeSubscription: return ["sonnet", "opus", "haiku"]
+        case .codexSubscription: return ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini"]
         case .anthropicAPI: return ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5", "claude-opus-4-7"]
         case .ollama: return ["gemma3:27b", "gpt-oss:120b", "llama3.2:3b", "qwen3-coder:480b", "deepseek-v3.1:671b"]
         case .openai: return ["gpt-4o", "gpt-4o-mini", "gpt-4.1"]
@@ -50,7 +54,7 @@ public enum LLMProvider: String, Codable, Sendable, CaseIterable {
     /// Env vars consulted (in order) for this provider's key.
     public var envVarNames: [String] {
         switch self {
-        case .claudeSubscription: return []
+        case .claudeSubscription, .codexSubscription: return []
         case .anthropicAPI: return ["PROSE_ANTHROPIC_KEY", "ANTHROPIC_API_KEY"]
         case .ollama: return ["PROSE_OLLAMA_KEY", "OLLAMA_API_KEY"]
         case .openai: return ["PROSE_OPENAI_KEY", "OPENAI_API_KEY"]

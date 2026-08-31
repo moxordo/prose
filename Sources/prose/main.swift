@@ -53,7 +53,7 @@ func printUsage() {
 
     OPTIONS (selftest):
       --text "…"       Text to rewrite (default: a messy sample)
-      --provider P     ollama | anthropic | openai | claude-subscription
+      --provider P     ollama | anthropic | openai | claude-subscription | codex-subscription
       --local          Force local Ollama (http://localhost:11434, llama3.2:3b)
       --model M        Override model
       --url U          Override Ollama base URL

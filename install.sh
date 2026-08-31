@@ -51,7 +51,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$SRC/.build/release/prose" "$APP/Contents/MacOS/prose"
 cp "$SRC/scripts/Info.plist" "$APP/Contents/Info.plist"
-codesign --force --sign - --identifier "$BUNDLE_ID" "$APP" >/dev/null 2>&1 || true
+# Stable signature so the Accessibility grant survives rebuilds (see scripts/codesign.sh).
+bash "$SRC/scripts/codesign.sh" "$APP" | sed "s/^/    /" || say "codesign failed — app left unsigned"
 
 # 3. Default config (cloud + gemma3:27b) if the user has none.
 CFG="$HOME/.config/prose/config.json"

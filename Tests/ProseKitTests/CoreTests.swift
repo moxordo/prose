@@ -118,6 +118,10 @@ final class ConfigurationTests: XCTestCase {
         XCTAssertEqual(LLMProvider.openai.envVarNames, ["PROSE_OPENAI_KEY", "OPENAI_API_KEY"])
         XCTAssertTrue(LLMProvider.openai.needsKey)
         XCTAssertFalse(LLMProvider.claudeSubscription.needsKey)
+        XCTAssertFalse(LLMProvider.codexSubscription.needsKey)
+        XCTAssertEqual(LLMProvider.codexSubscription.rawValue, "codex-subscription")
+        XCTAssertEqual(LLMProvider.codexSubscription.defaultModel, "gpt-5.6-sol")
+        XCTAssertEqual(LLMProvider(rawValue: "codex-subscription"), .codexSubscription)
     }
 
     func testLenientPartialDecode() throws {
@@ -292,3 +296,190 @@ final class PasteboardTests: XCTestCase {
     }
 }
 #endif
+
+// MARK: - Claude CLI result envelope (stdout is not the rewrite; the envelope is)
+
+final class ClaudeSubscriptionRewriterTests: XCTestCase {
+    private let envelope = #"{"type":"result","subtype":"success","is_error":false,"result":"Shorter.","session_id":"x"}"#
+
+    func testCleanEnvelope() throws {
+        XCTAssertEqual(try ClaudeSubscriptionRewriter.extractResult(stdout: envelope + "\n", stderr: "", exitCode: 0),
+                       "Shorter.")
+    }
+
+    func testChatterAroundEnvelopeIsIgnored() throws {
+        // The exact leak seen in the panel: MCP client warnings sharing stdout with the result.
+        let noise = "Client.listTools() called but server does not advertise tools capability - returning empty list\n"
+        let stdout = noise + envelope + "\n" + noise
+        XCTAssertEqual(try ClaudeSubscriptionRewriter.extractResult(stdout: stdout, stderr: "", exitCode: 0),
+                       "Shorter.")
+    }
+
+    func testEnvelopeWinsOverFailingExitCode() throws {
+        // A failing SessionEnd hook exits non-zero after the rewrite already succeeded.
+        XCTAssertEqual(try ClaudeSubscriptionRewriter.extractResult(
+            stdout: envelope, stderr: "SessionEnd hook failed: node: command not found", exitCode: 1),
+                       "Shorter.")
+    }
+
+    func testIsErrorSurfacesMessageEvenWithZeroExit() {
+        let err = #"{"type":"result","is_error":true,"result":"Not logged in · Please run /login"}"#
+        XCTAssertThrowsError(try ClaudeSubscriptionRewriter.extractResult(stdout: err, stderr: "", exitCode: 0)) {
+            XCTAssertEqual($0 as? RewriteError, .api("claude CLI: Not logged in · Please run /login"))
+        }
+    }
+
+    func testNoEnvelopeFallsBackToStderrAndExitCode() {
+        XCTAssertThrowsError(try ClaudeSubscriptionRewriter.extractResult(stdout: "", stderr: "boom", exitCode: 2)) {
+            XCTAssertEqual($0 as? RewriteError, .api("claude CLI failed (exit 2): boom"))
+        }
+        XCTAssertThrowsError(try ClaudeSubscriptionRewriter.extractResult(stdout: "garbage", stderr: "", exitCode: 0))
+    }
+
+    func testEmptyResultIsEmptyResponse() {
+        let empty = #"{"type":"result","is_error":false,"result":"  "}"#
+        XCTAssertThrowsError(try ClaudeSubscriptionRewriter.extractResult(stdout: empty, stderr: "", exitCode: 0)) {
+            XCTAssertEqual($0 as? RewriteError, .emptyResponse)
+        }
+    }
+
+    func testIsolationArgsKeepTheCLIQuiet() {
+        // Each flag closes a real failure (see the doc comment on isolationArgs).
+        let args = ClaudeSubscriptionRewriter.isolationArgs
+        XCTAssertTrue(args.contains("--strict-mcp-config"))
+        XCTAssertTrue(args.contains("--no-session-persistence"))
+        for (flag, value) in [("--output-format", "json"), ("--tools", ""), ("--setting-sources", "")] {
+            let i = try! XCTUnwrap(args.firstIndex(of: flag))
+            XCTAssertEqual(args[i + 1], value, flag)
+        }
+        XCTAssertFalse(args.contains("--bare"), "--bare skips the keychain → subscription login is lost")
+    }
+}
+
+// MARK: - Codex CLI result extraction (the -o file is the rewrite; stdout/stderr are not)
+
+final class CodexSubscriptionRewriterTests: XCTestCase {
+    func testLastMessageFileWins() throws {
+        XCTAssertEqual(try CodexSubscriptionRewriter.extractResult(
+            lastMessage: "Shorter.\n", stdout: "banner noise", stderr: "hook: SessionStart", exitCode: 0), "Shorter.")
+        // A late failure after the message was written still yields the text.
+        XCTAssertEqual(try CodexSubscriptionRewriter.extractResult(
+            lastMessage: "Shorter.", stdout: "", stderr: "ERROR: hook failed", exitCode: 1), "Shorter.")
+    }
+
+    func testStdoutFallbackOnlyOnCleanExit() throws {
+        XCTAssertEqual(try CodexSubscriptionRewriter.extractResult(
+            lastMessage: nil, stdout: "Shorter.\n", stderr: "", exitCode: 0), "Shorter.")
+        XCTAssertThrowsError(try CodexSubscriptionRewriter.extractResult(
+            lastMessage: nil, stdout: "", stderr: "", exitCode: 0)) {
+            XCTAssertEqual($0 as? RewriteError, .emptyResponse)
+        }
+    }
+
+    func testApiErrorJSONIsSurfaced() {
+        // Exact shape seen for an unsupported model on a ChatGPT account.
+        let stderr = """
+        OpenAI Codex v0.151.0
+        ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'bogus' model is not supported when using Codex with a ChatGPT account."}}
+        """
+        XCTAssertThrowsError(try CodexSubscriptionRewriter.extractResult(
+            lastMessage: nil, stdout: "", stderr: stderr, exitCode: 1)) {
+            XCTAssertEqual($0 as? RewriteError,
+                           .api("codex CLI failed (exit 1): The 'bogus' model is not supported when using Codex with a ChatGPT account."))
+        }
+    }
+
+    func testPlainStderrFallsBackToLastLine() {
+        XCTAssertEqual(CodexSubscriptionRewriter.errorMessage(fromStderr: "first\nnot logged in\n\n"), "not logged in")
+        XCTAssertEqual(CodexSubscriptionRewriter.errorMessage(fromStderr: ""), "no output")
+    }
+
+    func testIsolationArgsKeepTheCLIQuiet() {
+        let args = CodexSubscriptionRewriter.isolationArgs
+        for flag in ["--ignore-user-config", "--ephemeral", "--skip-git-repo-check"] {
+            XCTAssertTrue(args.contains(flag), flag)
+        }
+        for (flag, value) in [("--sandbox", "read-only"), ("--color", "never"), ("-c", "model_reasoning_effort=low")] {
+            let i = try! XCTUnwrap(args.firstIndex(of: flag))
+            XCTAssertEqual(args[i + 1], value, flag)
+        }
+        XCTAssertFalse(args.contains { $0.hasPrefix("--dangerously") })
+    }
+}
+
+// MARK: - CLI environment (what a GUI app's bare PATH can't see)
+
+final class CLIEnvironmentTests: XCTestCase {
+    private func makeFakeHome(alias: String?) throws -> String {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prose-home-\(UUID().uuidString)").path
+        for v in ["v20.18.1", "v25.2.1"] {
+            try FileManager.default.createDirectory(
+                atPath: "\(home)/.nvm/versions/node/\(v)/bin", withIntermediateDirectories: true)
+        }
+        try FileManager.default.createDirectory(atPath: "\(home)/.local/bin", withIntermediateDirectories: true)
+        if let alias {
+            try FileManager.default.createDirectory(atPath: "\(home)/.nvm/alias", withIntermediateDirectories: true)
+            try alias.write(toFile: "\(home)/.nvm/alias/default", atomically: true, encoding: .utf8)
+        }
+        return home
+    }
+
+    func testNvmDefaultAliasComesFirstThenNewest() throws {
+        let home = try makeFakeHome(alias: "20\n")
+        XCTAssertEqual(CLIEnvironment.nvmBinDirs(home: home),
+                       ["\(home)/.nvm/versions/node/v20.18.1/bin", "\(home)/.nvm/versions/node/v25.2.1/bin"])
+        let noAlias = try makeFakeHome(alias: nil)
+        XCTAssertEqual(CLIEnvironment.nvmBinDirs(home: noAlias).first, "\(noAlias)/.nvm/versions/node/v25.2.1/bin")
+    }
+
+    func testExtraToolDirsOnlyListsExistingOnes() throws {
+        let home = try makeFakeHome(alias: nil)
+        let dirs = CLIEnvironment.extraToolDirs(home: home)
+        XCTAssertTrue(dirs.contains("\(home)/.local/bin"))
+        XCTAssertFalse(dirs.contains("\(home)/.volta/bin"))
+        XCTAssertEqual(dirs.filter { $0.contains("/.nvm/") }.count, 2)
+    }
+
+    func testToolsOwnDirectoryLeadsThePath() {
+        XCTAssertEqual(CLIEnvironment.pathPrepending("/x/nvm/v20/bin/codex", to: "/usr/bin:/x/nvm/v20/bin:/bin"),
+                       "/x/nvm/v20/bin:/usr/bin:/bin")
+    }
+
+    func testResolveFindsSystemTools() async {
+        let sh = await CLIEnvironment.resolve("sh")
+        XCTAssertEqual(sh, "/bin/sh")
+        let missing = await CLIEnvironment.resolve("definitely-not-a-tool-\(UUID().uuidString)", fallbacks: ["/bin/ls"])
+        XCTAssertEqual(missing, "/bin/ls")
+    }
+}
+
+final class SubprocessTests: XCTestCase {
+    func testWatchdogTerminatesAHungProcess() async {
+        do {
+            _ = try await Subprocess.run("/bin/sleep", ["30"], timeout: 0.3)
+            XCTFail("expected a timeout")
+        } catch let t as Subprocess.TimedOut {
+            XCTAssertEqual(t.seconds, 0.3)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testDrainsBothPipesAndReportsExitCode() async throws {
+        let r = try await Subprocess.run("/bin/sh", ["-c", "echo out; echo err 1>&2; exit 3"], timeout: 5)
+        XCTAssertEqual(r.stdout, "out\n")
+        XCTAssertEqual(r.stderr, "err\n")
+        XCTAssertEqual(r.code, 3)
+    }
+}
+
+final class PermissionsTests: XCTestCase {
+    func testSignatureIsDescribed() {
+        // The test host is Apple-signed; the point is that the lookup never
+        // yields an empty summary the dialog would print verbatim.
+        let sig = Permissions.signature
+        XCTAssertFalse(sig.summary.isEmpty)
+        XCTAssertFalse(sig.adHoc && sig.summary == "signed")
+    }
+}

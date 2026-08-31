@@ -12,6 +12,8 @@ curl -fsSL https://raw.githubusercontent.com/moxordo/prose/main/install.sh | bas
 
 Builds from source on your machine (so Gatekeeper doesn't quarantine it) into `~/Applications/Prose.app`, writes a default config, and launches it. Then **grant Accessibility** when prompted (System Settings → Privacy & Security → Accessibility) — it's required to read your selection and post ⌘V.
 
+The installer signs the app with your **Apple Development / Developer ID** identity if you have one (override with `PROSE_SIGN_IDENTITY`), so the Accessibility grant survives rebuilds. Without one it falls back to an ad-hoc signature, which macOS keys to that exact build: after a rebuild, Prose still shows as ON in Accessibility but isn't trusted — use the app's **Reset & re-grant** button (or menu item) and switch it on again.
+
 Requirements: macOS 14+, Xcode Command Line Tools (`xcode-select --install`), and an [Ollama Cloud](https://ollama.com) key *or* a local Ollama.
 
 Uninstall: `curl -fsSL https://raw.githubusercontent.com/moxordo/prose/main/uninstall.sh | bash` (add `--purge` to also drop config + key).
@@ -55,10 +57,15 @@ Pick a provider in **Preferences… (⌘,)** or via `config.json`'s `provider` f
 
 | Provider (`provider`) | Auth | Default model | Notes |
 |---|---|---|---|
-| **Claude — subscription** (`claude-subscription`) | The signed-in `claude` CLI (your Claude.ai OAuth) | `sonnet` | No API key, no per-token billing; shells out to Claude Code |
+| **Claude — subscription** (`claude-subscription`) | The signed-in `claude` CLI (your Claude.ai OAuth) | `sonnet` | No API key, no per-token billing; shells out to `claude -p` in isolation mode (no MCP servers, tools, hooks/plugins, or saved transcript — see below) |
+| **Codex — ChatGPT subscription** (`codex-subscription`) | The signed-in `codex` CLI (your ChatGPT plan) | `gpt-5.6-sol` | No API key; shells out to `codex exec` in isolation mode (no MCP servers, hooks, config, or saved session — see below) |
 | **Claude — API key** (`anthropic`) | `ANTHROPIC_API_KEY` | `claude-opus-4-8` | Anthropic Messages API; no `temperature`, no thinking (fast) |
 | **Ollama** (`ollama`) | optional key | `gemma3:27b` (cloud) / `llama3.2:3b` (local) | `ollamaBaseURL: https://ollama.com` + key, or `http://localhost:11434` |
 | **OpenAI / ChatGPT** (`openai`) | `OPENAI_API_KEY` | `gpt-4o` | Chat Completions API |
+
+The subscription backend runs `claude -p … --output-format json --strict-mcp-config --tools "" --setting-sources "" --no-session-persistence` with your login shell's `PATH`, and reads the rewrite from the JSON `result` envelope. That keeps your Claude Code MCP servers, hooks, and plugins out of every rewrite — their startup chatter used to leak into the panel, and a hook that needed `node` failed under the app's bare PATH. (`--bare` would be simpler but also skips the keychain, so the subscription login is lost.)
+
+The Codex backend gets the same treatment: `codex exec … --ignore-user-config --ephemeral --sandbox read-only --skip-git-repo-check --color never -c model_reasoning_effort=low -o <file>`, reading the rewrite from the `-o` last-message file. `--ignore-user-config` drops `~/.codex/config.toml` — MCP servers, hooks, and the (often `xhigh`) reasoning default — while auth still comes from `CODEX_HOME`. Both CLIs run with an augmented PATH (login shell + nvm/volta/bun/`~/.local/bin`), because `codex` is a `#!/usr/bin/env node` script that a bare GUI PATH can't even start, and both are bounded by `requestTimeout`.
 
 **Key resolution** (per active provider): `PROSE_<PROVIDER>_KEY` / `<PROVIDER>_API_KEY` env → Keychain (`prose-<provider>-api-key`) → nothing. Keys live in the **Keychain**, never in config.json. Settings writes a pasted key into the right Keychain service automatically.
 
@@ -77,7 +84,7 @@ Four stages, each behind a protocol with a real implementation and a test double
 |---|---|---|
 | **Trigger** | `HotkeyTrigger` (⌥⌘R, Carbon) + `ForceClickTrigger` | Hotkey needs no Accessibility. Force-click uses an `NSEvent` monitor + `CGEventTap`; auto-re-arms when Accessibility is granted |
 | **Capture** | `AXSelectionCapture` → `ClipboardCopyCapture` | AX first; synthetic-⌘C fallback with pasteboard save/restore covers Terminal/Electron |
-| **Rewrite** | `makeRewriter(config)` → Ollama / Anthropic / OpenAI / Claude-CLI | Pluggable provider behind one `Rewriting` protocol; Rules + Preferences composed into the prompt |
+| **Rewrite** | `makeRewriter(config)` → Ollama / Anthropic / OpenAI / Claude-CLI / Codex-CLI | Pluggable provider behind one `Rewriting` protocol; Rules + Preferences composed into the prompt |
 | **Present** | `PanelPresenter` (key `NSPanel` + SwiftUI) | Streams the rewrite; Copy / Replace-in-place; returns focus to the source app |
 
 ## CLI
@@ -100,7 +107,7 @@ PROSE_LIVE_OLLAMA=1 PROSE_OLLAMA_URL=https://ollama.com PROSE_MODEL=gemma3:27b P
 
 ## Notes & limits
 
-- **Accessibility is mandatory and manual** — no app can self-grant it.
+- **Accessibility is mandatory and manual** — no app can self-grant it. A grant is keyed to the app's code-signing requirement; ad-hoc builds lose it on every rebuild (the launch dialog explains and offers **Reset & re-grant**, which runs `tccutil reset Accessibility com.moxordo.prose` and re-prompts). The launch log line records the signature kind.
 - **Force-click** is best-effort: macOS doesn't broadcast pressure events globally, so ⌥⌘R is the reliable trigger. Diagnostics land in `~/Library/Logs/Prose.log`.
 - Not sandboxed / not notarized → installs by building locally (no Gatekeeper quarantine).
 - Password/secure-input fields won't expose text (by design).

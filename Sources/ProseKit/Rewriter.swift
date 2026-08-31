@@ -21,7 +21,7 @@ public enum RewriteError: LocalizedError, Equatable {
         case .badURL(let u): return "Invalid Ollama base URL: \(u)"
         case .http(let s, let m):
             return "Ollama returned HTTP \(s)\(m.isEmpty ? "" : ": \(m)")"
-        case .api(let m): return "Ollama error: \(m)"
+        case .api(let m): return "Provider error: \(m)"
         case .emptyResponse: return "The model returned an empty rewrite."
         case .emptyInput: return "No text was selected."
         }
@@ -52,6 +52,7 @@ public func makeRewriter(config: ProseConfig, session: URLSession = .shared) -> 
     case .anthropicAPI: return AnthropicRewriter(config: config, session: session)
     case .openai: return OpenAIRewriter(config: config, session: session)
     case .claudeSubscription: return ClaudeSubscriptionRewriter(config: config)
+    case .codexSubscription: return CodexSubscriptionRewriter(config: config)
     }
 }
 
