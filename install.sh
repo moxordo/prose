@@ -50,7 +50,9 @@ sleep 1
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$SRC/.build/release/prose" "$APP/Contents/MacOS/prose"
-cp "$SRC/scripts/Info.plist" "$APP/Contents/Info.plist"
+# Stamp the version from Sources/ProseKit/Version.swift (single source of truth).
+VERSION="$(grep -o 'current = "[^"]*"' "$SRC/Sources/ProseKit/Version.swift" | cut -d'"' -f2)"
+sed "s/__VERSION__/${VERSION:-0.0.0}/g" "$SRC/scripts/Info.plist" > "$APP/Contents/Info.plist"
 # Stable signature so the Accessibility grant survives rebuilds (see scripts/codesign.sh).
 bash "$SRC/scripts/codesign.sh" "$APP" | sed "s/^/    /" || say "codesign failed — app left unsigned"
 
