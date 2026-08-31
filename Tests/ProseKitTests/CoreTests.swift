@@ -457,13 +457,35 @@ final class CLIEnvironmentTests: XCTestCase {
 final class SubprocessTests: XCTestCase {
     func testWatchdogTerminatesAHungProcess() async {
         do {
-            _ = try await Subprocess.run("/bin/sleep", ["30"], timeout: 0.3)
+            _ = try await Subprocess.run("/bin/sleep", ["10"], timeout: 0.3)
             XCTFail("expected a timeout")
         } catch let t as Subprocess.TimedOut {
             XCTAssertEqual(t.seconds, 0.3)
         } catch {
             XCTFail("unexpected error: \(error)")
         }
+    }
+
+    func testTimeoutDoesNotFireForAProcessThatFinishes() async throws {
+        let r = try await Subprocess.run("/bin/sh", ["-c", "exit 4"], timeout: 5)
+        XCTAssertEqual(r.code, 4)
+    }
+
+    func testDoesNotWaitForOrphanedGrandchildren() async throws {
+        // A background child inherits our pipes and outlives its parent; we must
+        // return when the parent exits, not when the grandchild closes the pipe.
+        let start = Date()
+        let r = try await Subprocess.run("/bin/sh", ["-c", "sleep 5 & echo hi"], timeout: 10)
+        XCTAssertEqual(r.stdout, "hi\n")
+        XCTAssertEqual(r.code, 0)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 3)
+    }
+
+    func testLargeOutputDoesNotDeadlock() async throws {
+        // 1 MB on stdout — far past the 64 KB pipe buffer.
+        let r = try await Subprocess.run("/bin/sh", ["-c", "head -c 1048576 /dev/zero | tr '\\0' x"], timeout: 10)
+        XCTAssertEqual(r.stdout.count, 1_048_576)
+        XCTAssertEqual(r.code, 0)
     }
 
     func testDrainsBothPipesAndReportsExitCode() async throws {
