@@ -1,6 +1,8 @@
 # Prose
 
-A macOS menu-bar utility: **select text in any app and press ⌥⌘R (or force-click) to get a clearer rewrite** in a floating panel, with Copy / Replace-in-place. Backed by Ollama — your cloud subscription (`ollama.com`) or a local model.
+[![CI](https://github.com/moxordo/prose/actions/workflows/ci.yml/badge.svg)](https://github.com/moxordo/prose/actions/workflows/ci.yml)
+
+A macOS menu-bar utility: **select text in any app and press ⌥⌘R (or force-click) to get a clearer rewrite** in a floating panel, with Copy / Replace-in-place. Bring your own model: Claude (subscription or API key), Codex (ChatGPT subscription), Ollama (local or cloud), or OpenAI.
 
 You teach it *your* style: editable **Rules** (hard constraints) and **Preferences** (soft guidance) that shape every rewrite.
 
@@ -111,6 +113,12 @@ PROSE_LIVE_OLLAMA=1 PROSE_OLLAMA_URL=https://ollama.com PROSE_MODEL=gemma3:27b P
 - **Force-click** is best-effort: macOS doesn't broadcast pressure events globally, so ⌥⌘R is the reliable trigger. Diagnostics land in `~/Library/Logs/Prose.log`.
 - Not sandboxed / not notarized → installs by building locally (no Gatekeeper quarantine).
 - Password/secure-input fields won't expose text (by design).
+
+## Releasing
+
+1. Bump `ProseVersion.current` in `Sources/ProseKit/Version.swift` (it is stamped into `Info.plist` and printed by `prose version`).
+2. Move the `[Unreleased]` notes in `CHANGELOG.md` under the new version.
+3. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z` — CI checks the tag against `Info.plist` and uploads the bundle.
 
 ## License
 

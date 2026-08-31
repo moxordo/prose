@@ -41,11 +41,11 @@ func resolveConfig() -> ProseConfig {
 
 func printUsage() {
     print("""
-    prose — force-click to improve your writing (Ollama-backed)
+    prose \(ProseVersion.current) — select text, press a hotkey, get a clearer rewrite
 
     USAGE:
       prose [run]                 Launch the menu-bar app (default)
-      prose selftest [opts]       Headless: capture→rewrite→stdout against Ollama
+      prose selftest [opts]       Headless: capture→rewrite→stdout with the configured backend
       prose capture-test          Print the currently selected text (needs Accessibility)
       prose snapshot [--out P]    Render the panel UI to a PNG (default /tmp/prose-panel.png)
       prose config                Show resolved configuration (key redacted)
@@ -226,7 +226,7 @@ case "help", "-h", "--help":
     printUsage()
 
 case "version", "--version":
-    print("prose 0.1.0")
+    print("prose \(ProseVersion.current)")
 
 case "config":
     runConfig()

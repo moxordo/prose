@@ -17,7 +17,8 @@ APP="dist/Prose.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/prose"
-cp scripts/Info.plist "$APP/Contents/Info.plist"
+VERSION="$(grep -o 'current = "[^"]*"' Sources/ProseKit/Version.swift | cut -d'"' -f2)"
+sed "s/__VERSION__/${VERSION:-0.0.0}/g" scripts/Info.plist > "$APP/Contents/Info.plist"
 
 echo "▸ codesigning…"
 bash scripts/codesign.sh "$APP" | sed 's/^/  /'
